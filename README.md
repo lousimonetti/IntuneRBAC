@@ -20,20 +20,6 @@ A comprehensive PowerShell-based tool for managing and auditing Role-Based Acces
   - DeviceManagementConfiguration.Read.All
   - User.ReadBasic.All
 
-## Installation
-
-1. Clone this repository:
-
-```powershell
-git clone https://github.com/yourusername/IntuneRBAC.git
-```
-
-2. Navigate to the repository directory:
-
-```powershell
-cd IntuneRBAC
-```
-
 ## Usage
 
 ### Main Health Check Script
