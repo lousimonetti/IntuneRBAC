@@ -1,4 +1,4 @@
-# 🛡️🔑 Intune role-based access control (RBAC)
+# 🔐 Intune role-based access control (RBAC)
 
 A comprehensive PowerShell-based tool for managing and auditing Role-Based Access Control (RBAC) in Microsoft Intune. This tool provides detailed insights into your Intune RBAC configuration, including role assignments, scope tags, and permissions.
 
