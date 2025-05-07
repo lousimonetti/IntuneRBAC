@@ -5,13 +5,36 @@ Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Rea
 $tenantInfo = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization" -Method GET
 $tenantName = $tenantInfo.value[0].displayName
 $lastUpdated = Get-Date -Format "MMMM dd, yyyy HH:mm"
-$version = "0.1"
+$version = "0.2"
 
 # Data processing for charts
 $rolesWithScopeTagsCount = 0
 $rolesWithoutScopeTagsCount = 0
 $customRolesCount = 0
 $builtInRolesCount = 0
+$unusedRolesCount = 0
+$rolesWithExcessivePermissionsCount = 0
+$rolesWithPermissionGapsCount = 0
+$rolesWithOverlappingPermissionsCount = 0
+
+# Define critical permissions that should be present in roles
+$criticalPermissions = @{
+  'Mobile Apps' = @(
+    "Microsoft.Intune_MobileApps_Read"
+  )
+  'Devices'     = @(
+    "Microsoft.Intune_Devices_Read"
+  )
+  'Policies'    = @(
+    "Microsoft.Intune_DeviceConfigurations_Read"
+  )
+  'Security'    = @(
+    "Microsoft.Intune_Security_Read"
+  )
+}
+
+# Define excessive permissions thresholds
+$excessivePermissionsThreshold = 50  # Flag roles with more than 50 permissions
 
 # Fetch all roles first
 $rolesUri = "https://graph.microsoft.com/beta/deviceManagement/roleDefinitions"
@@ -159,23 +182,124 @@ function Get-CategorizedPermissions {
   return $categories
 }
 
-# Function to Fetch Roles and their Scope Tags
-function Get-RolesWithScopeTags {
-  param(
-    $Uri, 
-    $ScopeTags
-  )
-  $response = Invoke-MgGraphRequest -Uri $Uri -Method GET
+# Function to check for permission gaps
+function Get-PermissionGaps {
+  param($allowedActions)
+  
+  $gaps = @{}
+  $categorizedPermissions = Get-CategorizedPermissions -actions $allowedActions
+  
+  foreach ($category in $criticalPermissions.Keys) {
+    $missingPermissions = @()
+    foreach ($criticalPerm in $criticalPermissions[$category]) {
+      if ($allowedActions -notcontains $criticalPerm) {
+        $missingPermissions += $criticalPerm.Replace("Microsoft.Intune_", "")
+      }
+    }
+    
+    if ($missingPermissions.Count -gt 0) {
+      $gaps[$category] = $missingPermissions
+    }
+  }
+  
+  return $gaps
+}
 
-  $htmlContent = @()
+# Function to check for excessive permissions
+function Test-ExcessivePermissions {
+  param($allowedActions)
+  
+  return $allowedActions.Count -gt $excessivePermissionsThreshold
+}
 
-  foreach ($role in $response.value) {
+# Function to check for unused roles
+function Test-UnusedRole {
+  param($roleId)
+  
+  $assignments = Get-RoleAssignments -roleId $roleId
+  return $assignments.Count -eq 0
+}
+
+# Function to find overlapping permissions between roles
+function Get-OverlappingPermissions {
+  param($allRoles)
+  
+  $overlaps = @{}
+  
+  # Create a lookup of role ID to permissions
+  $rolePermissions = @{}
+  foreach ($role in $allRoles) {
     $allowedActions = @()
     foreach ($perm in $role.rolePermissions) {
       foreach ($action in $perm.resourceActions) {
         $allowedActions += $action.allowedResourceActions
       }
     }
+    $rolePermissions[$role.id] = @{
+      DisplayName = $role.displayName
+      Permissions = $allowedActions
+    }
+  }
+  
+  # Compare each role with every other role
+  foreach ($roleId in $rolePermissions.Keys) {
+    $overlaps[$roleId] = @{}
+    foreach ($otherRoleId in $rolePermissions.Keys) {
+      if ($roleId -ne $otherRoleId) {
+        $commonPermissions = Compare-Object -ReferenceObject $rolePermissions[$roleId].Permissions -DifferenceObject $rolePermissions[$otherRoleId].Permissions -IncludeEqual |
+        Where-Object { $_.SideIndicator -eq '==' } |
+        Select-Object -ExpandProperty InputObject
+        
+        if ($commonPermissions.Count -gt 0) {
+          $overlaps[$roleId][$otherRoleId] = @{
+            RoleName          = $rolePermissions[$otherRoleId].DisplayName
+            CommonPermissions = $commonPermissions
+            OverlapPercentage = [math]::Round(($commonPermissions.Count / $rolePermissions[$roleId].Permissions.Count) * 100, 1)
+          }
+        }
+      }
+    }
+  }
+  
+  return $overlaps
+}
+
+# Function to Fetch Roles and their Scope Tags
+function Get-RolesWithScopeTags {
+  param(
+    $Uri,
+    $ScopeTags
+  )
+  $response = Invoke-MgGraphRequest -Uri $Uri -Method GET
+  
+  # Store all roles for overlap analysis
+  $allRoles = $response.value
+  
+  # Get overlapping permissions
+  $overlappingPermissions = Get-OverlappingPermissions -allRoles $allRoles
+
+  $htmlContent = @()
+
+  foreach ($role in $allRoles) {
+    $allowedActions = @()
+    foreach ($perm in $role.rolePermissions) {
+      foreach ($action in $perm.resourceActions) {
+        $allowedActions += $action.allowedResourceActions
+      }
+    }
+
+    # Security Analysis
+    $isUnused = Test-UnusedRole -roleId $role.id
+    $hasExcessivePermissions = Test-ExcessivePermissions -allowedActions $allowedActions
+    $permissionGaps = Get-PermissionGaps -allowedActions $allowedActions
+    $hasPermissionGaps = $permissionGaps.Count -gt 0
+    $hasOverlappingPermissions = $overlappingPermissions[$role.id].Count -gt 0
+    
+    # Update counters
+    if ($isUnused) { $script:unusedRolesCount++ }
+    if ($hasExcessivePermissions) { $script:rolesWithExcessivePermissionsCount++ }
+    if ($hasPermissionGaps) { $script:rolesWithPermissionGapsCount++ }
+    if ($hasOverlappingPermissions) { $script:rolesWithOverlappingPermissionsCount++ }
 
     $roleType = if ($role.isBuiltIn) { "Built-In Role" } else { "Custom Role" }
         
@@ -193,8 +317,24 @@ function Get-RolesWithScopeTags {
       $scopeTagInfo = "<div class='no-scope-tag'>No Scope Tag assigned</div>"
     }
 
+    # Create security badges
+    $securityBadges = "<div class='accordion-badges'>"
+    if ($isUnused) {
+      $securityBadges += "<span class='security-badge warning'><i class='fas fa-exclamation-triangle'></i> Unused Role</span>"
+    }
+    if ($hasExcessivePermissions) {
+      $securityBadges += "<span class='security-badge warning'><i class='fas fa-exclamation-triangle'></i> Excessive Permissions</span>"
+    }
+    if ($hasPermissionGaps) {
+      $securityBadges += "<span class='security-badge warning'><i class='fas fa-exclamation-triangle'></i> Permission Gaps</span>"
+    }
+    if ($hasOverlappingPermissions) {
+      $securityBadges += "<span class='security-badge info'><i class='fas fa-info-circle'></i> Overlapping Permissions</span>"
+    }
+    $securityBadges += "</div>"
+
     # Start the accordion for each role
-    $htmlContent += "<button class='accordion'><strong>$($role.displayName)</strong></button>"
+    $htmlContent += "<button class='accordion'><div class='accordion-header'><span class='accordion-title'>$($role.displayName)</span>$securityBadges</div></button>"
     $htmlContent += "<div class='panel'>"
     $htmlContent += "<div class='panel-content'>"
 
@@ -227,7 +367,65 @@ function Get-RolesWithScopeTags {
       }
       $htmlContent += "</div>"
     }
+    else {
+      $htmlContent += "<div class='panel-top-section warning-section'>"
+      $htmlContent += "<h3><i class='fas fa-exclamation-triangle'></i>Unused Role</h3>"
+      $htmlContent += "<p>This role is not assigned to any groups or users.</p>"
+      $htmlContent += "<p>Consider removing this role if it's not needed or assign it to appropriate groups.</p>"
+      $htmlContent += "</div>"
+    }
     $htmlContent += "</div>" # Close panel-top
+    
+    # Security Analysis Section
+    if ($hasPermissionGaps -or $hasExcessivePermissions -or $hasOverlappingPermissions) {
+      $htmlContent += "<div class='security-analysis'>"
+      $htmlContent += "<h3><i class='fas fa-shield-alt'></i>Security Analysis</h3>"
+      
+      # Permission Gaps
+      if ($hasPermissionGaps) {
+        $htmlContent += "<div class='security-section warning-section'>"
+        $htmlContent += "<h4><i class='fas fa-exclamation-triangle'></i>Permission Gaps</h4>"
+        $htmlContent += "<p>This role is missing critical permissions that may be required for proper functionality:</p>"
+        $htmlContent += "<ul class='gap-list'>"
+        foreach ($category in $permissionGaps.Keys) {
+          $categoryName = $category
+          $htmlContent += "<li><strong>$categoryName</strong>: $($permissionGaps[$category] -join ', ')</li>"
+        }
+        $htmlContent += "</ul>"
+        $htmlContent += "</div>"
+      }
+      
+      # Excessive Permissions
+      if ($hasExcessivePermissions) {
+        $htmlContent += "<div class='security-section warning-section'>"
+        $htmlContent += "<h4><i class='fas fa-exclamation-triangle'></i>Excessive Permissions</h4>"
+        $htmlContent += "<p>This role has $($allowedActions.Count) permissions, which exceeds the recommended threshold of $excessivePermissionsThreshold.</p>"
+        $htmlContent += "<p>Consider reviewing and potentially splitting this role to follow the principle of least privilege.</p>"
+        $htmlContent += "</div>"
+      }
+      
+      # Overlapping Permissions
+      if ($hasOverlappingPermissions) {
+        $htmlContent += "<div class='security-section info-section'>"
+        $htmlContent += "<h4><i class='fas fa-info-circle'></i>Overlapping Permissions</h4>"
+        $htmlContent += "<p>This role has significant permission overlap with the following roles:</p>"
+        $htmlContent += "<ul class='overlap-list'>"
+        
+        # Get top 3 overlapping roles by percentage
+        $topOverlaps = $overlappingPermissions[$role.id].GetEnumerator() |
+        Sort-Object { $_.Value.OverlapPercentage } -Descending |
+        Select-Object -First 3
+        
+        foreach ($overlap in $topOverlaps) {
+          $htmlContent += "<li><strong>$($overlap.Value.RoleName):</strong> $($overlap.Value.OverlapPercentage)% overlap ($($overlap.Value.CommonPermissions.Count) permissions)</li>"
+        }
+        
+        $htmlContent += "</ul>"
+        $htmlContent += "</div>"
+      }
+      
+      $htmlContent += "</div>" # Close security-analysis
+    }
 
     # Bottom Panel (Resource Actions)
     $htmlContent += "<div class='panel-bottom'>"
@@ -318,6 +516,8 @@ $htmlHeader = @"
   --card-background: #ffffff;
   --border-color: #E2E8F0;
   --error-color: #EF476F;
+  --warning-color: #FF9F1C;
+  --info-color: #2196F3;
 }
 
 body {
@@ -544,9 +744,50 @@ h2 {
   transition: 0.3s;
   border-radius: 8px;
   margin-bottom: 5px;
+  display: block;
+}
+
+.accordion-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.accordion-title {
+  font-weight: bold;
+}
+
+.accordion-badges {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.security-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 5px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.security-badge i {
+  margin-right: 5px;
+}
+
+.security-badge.warning {
+  background-color: var(--warning-color);
+  color: white;
+}
+
+.security-badge.info {
+  background-color: var(--info-color);
+  color: white;
 }
 
 .accordion:after {
@@ -762,6 +1003,89 @@ h2 {
     color: var(--text-color);
 }
 
+.security-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 10px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    font-weight: normal;
+}
+
+.security-badge i {
+    margin-right: 5px;
+}
+
+.security-badge.warning {
+    background-color: var(--warning-color);
+    color: white;
+}
+
+.security-badge.info {
+    background-color: var(--info-color);
+    color: white;
+}
+
+.security-analysis {
+    margin: 20px 0;
+    padding: 20px;
+    background-color: var(--surface-color);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.security-analysis h3 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: var(--text-color);
+}
+
+.security-section {
+    margin-bottom: 15px;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.warning-section {
+    background-color: rgba(255, 159, 28, 0.1);
+    border-left: 4px solid var(--warning-color);
+}
+
+.info-section {
+    background-color: rgba(33, 150, 243, 0.1);
+    border-left: 4px solid var(--info-color);
+}
+
+.security-section h4 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+
+.gap-list, .overlap-list {
+    margin: 10px 0;
+    padding-left: 20px;
+}
+
+.gap-list li, .overlap-list li {
+    margin-bottom: 5px;
+}
+
+.stat-card.warning {
+    border-left: 4px solid var(--warning-color);
+}
+
+.stat-card.info {
+    border-left: 4px solid var(--info-color);
+}
+
 @media screen and (max-width: 768px) {
     .panel-top {
         flex-direction: column;
@@ -852,6 +1176,26 @@ h2 {
       <div class='stat-card'>
         <div class='stat-number'>$scopeTagsCount</div>
         <div class='stat-label'>Scope Tags</div>
+      </div>
+    </div>
+    
+    <h2>Security Analysis</h2>
+    <div class='stats-grid'>
+      <div class='stat-card warning'>
+        <div class='stat-number'>$unusedRolesCount</div>
+        <div class='stat-label'>Unused Roles</div>
+      </div>
+      <div class='stat-card warning'>
+        <div class='stat-number'>$rolesWithExcessivePermissionsCount</div>
+        <div class='stat-label'>Roles with Excessive Permissions</div>
+      </div>
+      <div class='stat-card warning'>
+        <div class='stat-number'>$rolesWithPermissionGapsCount</div>
+        <div class='stat-label'>Roles with Permission Gaps</div>
+      </div>
+      <div class='stat-card info'>
+        <div class='stat-number'>$rolesWithOverlappingPermissionsCount</div>
+        <div class='stat-label'>Roles with Overlapping Permissions</div>
       </div>
     </div>
   </div>
