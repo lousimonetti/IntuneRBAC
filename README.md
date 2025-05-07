@@ -4,15 +4,17 @@ A comprehensive PowerShell-based tool for managing and auditing Role-Based Acces
 
 > **Note**: The RBAC Health Check Script is currently in preview.
 
-![761238](https://github.com/user-attachments/assets/1d98e9e0-3829-40e8-b09d-28106695fa80)
+_(Image removed as it may not reflect the latest version)_
 
 ## Features
 
-- **RBAC Health Check**: Comprehensive analysis of your Intune RBAC configuration
-- **Role Management**: Export and analyze role definitions and assignments
-- **Scope Tag Management**: Export and manage scope tags across devices, policies, and applications
-- **Permission Analysis**: Detailed breakdown of role permissions and assignments
-- **Resource Management**: Export and manage resource permissions across your Intune environment
+- **RBAC Health Check**: Generates an interactive HTML report analyzing your Intune RBAC configuration, including:
+  - Overall statistics (Total Roles, Custom Roles, Scope Tags).
+  - Security analysis (Unused Roles, Overlapping Permissions).
+  - Detailed role information (Assignments, Members, Scope Tags, Permissions).
+  - A comprehensive Permissions Matrix (Roles vs. Permissions).
+  - An interactive Role Relationship Diagram (Roles -> Groups -> Users).
+- **Snippet Scripts**: Utility scripts for specific tasks like exporting roles, scope tags, assignments, and permissions (see `Snippets/` directory).
 
 ## Prerequisites
 
@@ -48,27 +50,29 @@ The `Snippets` directory contains various utility scripts for specific RBAC mana
 
 ## Features in Detail
 
-### RBAC Health Check
+### RBAC Health Check (`RBAC_HealthCheck.ps1`)
 
-The main script (`RBAC_HealthCheck.ps1`) provides:
+The main script generates an HTML report featuring:
 
-- Role distribution analysis (built-in vs. custom roles)
-- Scope tag coverage analysis
-- Role assignment overview
-- Permission tiering analysis
-- Resource permission mapping
+- **Dashboard**: Key statistics on total roles, custom roles, and scope tags.
+- **Security Analysis**: Highlights potential issues like unused roles and roles with overlapping permissions.
+- **Roles Overview**: An accordion view for each role detailing:
+  - Basic Information (Description, Type, Scope Tags).
+  - Assignments (Groups, Members).
+  - Security findings (e.g., Unused, Overlaps).
+  - Allowed Resource Actions (categorized and searchable).
+- **Permissions Matrix**: A table showing which roles have which specific permissions.
+- **Relationship Diagram**: An interactive graph visualizing the connections between Roles, assigned Groups, and group Members (Users).
 
-### Scope Tag Management
+### Snippet Scripts (`Snippets/` directory)
 
-- Export all scope tags across different resource types
-- Assign scope tags to devices and applications
-- Analyze scope tag coverage and gaps
+Contains various utility scripts for specific RBAC management tasks, such as:
 
-### Role Management
+- Exporting roles, scope tags, assignments, permissions.
+- Assigning scope tags to devices or applications.
+  _(Refer to the script names in the directory for specific functions)_
 
-- Export role definitions and assignments
-- Analyze role permissions
-- Track role usage and assignments
+_(Role/Scope Tag management details are covered by the Snippet Scripts)_
 
 ## Contributing
 
