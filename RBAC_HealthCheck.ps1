@@ -5,7 +5,7 @@ Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Rea
 $tenantInfo = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization" -Method GET
 $tenantName = $tenantInfo.value[0].displayName
 $lastUpdated = Get-Date -Format "MMMM dd, yyyy HH:mm"
-$version = "0.2.1"
+$version = "0.2.2"
 
 # Data processing for charts
 $rolesWithScopeTagsCount = 0
@@ -18,6 +18,9 @@ $rolesWithPermissionGapsCount = 0
 $rolesWithOverlappingPermissionsCount = 0
 $script:allPermissionsMatrixData = @{}
 $script:allRoleNamesForMatrixData = [System.Collections.Generic.List[string]]::new()
+$script:graphNodes = [System.Collections.Generic.List[object]]::new()
+$script:graphLinks = [System.Collections.Generic.List[object]]::new()
+$script:processedGraphNodeIds = [System.Collections.Generic.HashSet[string]]::new()
 
 # Define critical permissions that should be present in roles
 $criticalPermissions = @{
@@ -508,6 +511,80 @@ function Get-RolesWithScopeTags {
 
     $htmlContent += "</div>" # Close panel-content
     $htmlContent += "</div>" # Close panel
+
+    # ---- START: Populate data for Interactive Role Relationship Diagram ----
+    try {
+      # Add Role Node
+      if ($script:processedGraphNodeIds.Add($role.id)) {
+        $script:graphNodes.Add(@{
+            id               = $role.id
+            label            = $role.displayName
+            type             = "role"
+            title            = "Role: $($role.displayName)<br>Built-in: $($role.isBuiltIn)<br>Permissions: $($allowedActions.Count)"
+            group            = "role" # For vis.js styling
+            builtin          = $role.isBuiltIn # Store for tooltip or other logic
+            permissionsCount = $allowedActions.Count # Store for tooltip
+          })
+      }
+
+      # Get assignments for this role
+      $roleAssignmentsForGraph = Get-RoleAssignments -roleId $role.id
+      if ($roleAssignmentsForGraph) {
+        foreach ($assignmentItem in $roleAssignmentsForGraph) {
+          # $assignmentItem.RoleDefinitionId is actually the RoleAssignmentId here based on Get-RoleAssignments structure
+          $roleMembersForGraph = Get-RoleMembers -roleDefinitionId $assignmentItem.RoleDefinitionId
+          if ($roleMembersForGraph) {
+            foreach ($groupMemberItem in $roleMembersForGraph) {
+              # Add Group Node
+              if ($script:processedGraphNodeIds.Add($groupMemberItem.GroupId)) {
+                $script:graphNodes.Add(@{
+                    id    = $groupMemberItem.GroupId
+                    label = $groupMemberItem.GroupName
+                    type  = "group"
+                    title = "Group: $($groupMemberItem.GroupName)"
+                    group = "group"
+                  })
+              }
+              # Add Role-to-Group Link
+              $script:graphLinks.Add(@{
+                  from = $role.id
+                  to   = $groupMemberItem.GroupId
+                  type = "role_to_group" # For styling/filtering
+                })
+
+              # Get users in this group
+              $userUpnsInGroup = Get-GroupMembers -groupId $groupMemberItem.GroupId
+              if ($userUpnsInGroup) {
+                foreach ($userUpn in $userUpnsInGroup) {
+                  # Add User Node (use UPN as ID for users for simplicity, ensure it's unique)
+                  $userIdForGraph = "user_" + $userUpn # Prefix to avoid collision with other IDs
+                  if ($script:processedGraphNodeIds.Add($userIdForGraph)) {
+                    $script:graphNodes.Add(@{
+                        id      = $userIdForGraph
+                        label   = $userUpn.Split('@')[0] # Display username part
+                        type    = "user"
+                        title   = "User: $($userUpn)"
+                        group   = "user"
+                        fullUpn = $userUpn
+                      })
+                  }
+                  # Add Group-to-User Link
+                  $script:graphLinks.Add(@{
+                      from = $groupMemberItem.GroupId
+                      to   = $userIdForGraph
+                      type = "group_to_user"
+                    })
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    catch {
+      Write-Warning "Error populating graph data for role $($role.displayName): $($_.Exception.Message)"
+    }
+    # ---- END: Populate data for Interactive Role Relationship Diagram ----
   }
 
   # Final pass to ensure matrix is complete and sort role names
@@ -525,8 +602,8 @@ function Get-RolesWithScopeTags {
 
 function Generate-PermissionsMatrixHtml {
   $matrixHtml = @()
-  $matrixHtml += "<h2><i class='fas fa-table'></i> Permissions Matrix</h2>"
-  $matrixHtml += "<div class='permissions-matrix-container'>"
+  $matrixHtml += "<h2 id='permissions-matrix-section'><i class='fas fa-table'></i> Permissions Matrix</h2>"
+  $matrixHtml += "<div class='permissions-matrix-container'>" # ID moved to H2 for direct navigation
   $matrixHtml += "<table class='permissions-matrix-table'>"
   $matrixHtml += "<thead><tr><th>Permission</th>"
 
@@ -569,6 +646,24 @@ $totalRolesCount = $rolesWithScopeTagsCount + $rolesWithoutScopeTagsCount
 $scopeTagsCount = $scopeTags.Count
 
 # Create HTML file content
+$navigationButtons = @"
+        <a href="#rbac-statistics-section" class="hero-button">
+          <i class="fas fa-chart-bar"></i> RBAC Stats
+        </a>
+        <a href="#security-analysis-section" class="hero-button">
+          <i class="fas fa-shield-alt"></i> Security Analysis
+        </a>
+        <a href="#roles-overview-section" class="hero-button">
+          <i class="fas fa-user-cog"></i> Roles Overview
+        </a>
+        <a href="#permissions-matrix-section" class="hero-button">
+          <i class="fas fa-table"></i> Permissions Matrix
+        </a>
+        <a href="#role-relationship-diagram-section" class="hero-button">
+          <i class="fas fa-project-diagram"></i> Relationship Diagram
+        </a>
+"@
+
 $htmlHeader = @"
 <!DOCTYPE html>
 <html>
@@ -690,6 +785,7 @@ body {
   gap: 12px;
   margin-top: 24px;  /* Increased top margin */
   margin-bottom: 20px;  /* Added bottom margin */
+  flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
 }
 
 .hero-button {
@@ -1159,6 +1255,10 @@ h2 {
     border-left: 4px solid var(--info-color);
 }
 
+.stat-card.critical {
+    border-left: 4px solid var(--error-color); /* Match badge color */
+}
+
 @media screen and (max-width: 768px) {
     .panel-top {
         flex-direction: column;
@@ -1320,13 +1420,14 @@ h2 {
           <i class="fas fa-comment"></i>
           Provide Feedback
         </a>
+$navigationButtons
       </div>
     </div>
   </div>
 </div>
 <div class="container">
   <!-- Statistics Section -->
-  <div class='stats-container'>
+  <div class='stats-container' id='rbac-statistics-section'>
     <h2>RBAC Statistics</h2>
     <div class='stats-grid'>
       <div class='stat-card'>
@@ -1343,7 +1444,7 @@ h2 {
       </div>
     </div>
     
-    <h2>Security Analysis</h2>
+    <h2 id='security-analysis-section'>Security Analysis</h2>
     <div class='stats-grid'>
       <div class='stat-card warning'>
         <div class='stat-number'>$unusedRolesCount</div>
@@ -1363,6 +1464,12 @@ h2 {
       </div>
     </div>
   </div>
+"@
+
+$htmlRolesOverviewHeader = @"
+<div id='roles-overview-section'>
+  <h2><i class='fas fa-user-cog'></i> Roles Overview</h2>
+</div>
 "@
 
 $htmlFooter = @"
@@ -1430,7 +1537,224 @@ function filterPermissions(input) {
 </html>
 "@
 
+function Generate-RoleRelationshipDiagramHtml {
+  param(
+    [System.Collections.Generic.List[object]]$Nodes,
+    [System.Collections.Generic.List[object]]$Links
+  )
+
+  $nodesJson = $Nodes | ConvertTo-Json -Depth 5 -Compress
+  $linksJson = $Links | ConvertTo-Json -Depth 5 -Compress
+
+  # Ensure JSON is properly escaped for embedding in a JavaScript string literal
+  $escapedNodesJson = $nodesJson -replace '\\', '\\\\' -replace "'", "\'" -replace '"', '\"'
+  $escapedLinksJson = $linksJson -replace '\\', '\\\\' -replace "'", "\'" -replace '"', '\"'
+
+  $diagramHtml = @"
+<div id='role-relationship-diagram-section' class='container-section'>
+  <h2><i class='fas fa-project-diagram'></i> Interactive Role Relationship Diagram</h2>
+  <div class='visualization-container'>
+    <div class='visualization-controls'>
+      <input type="text" id="graphSearchNodes" placeholder="Search nodes..." onkeyup="searchGraphNodes()">
+      <button onclick="toggleGraphNodeType('role')">Toggle Roles</button>
+      <button onclick="toggleGraphNodeType('group')">Toggle Groups</button>
+      <button onclick="toggleGraphNodeType('user')">Toggle Users</button>
+      <button onclick="resetGraphView()">Reset View</button>
+    </div>
+    <div id='roleGraphVisualization'></div>
+  </div>
+</div>
+
+<style>
+.visualization-container {
+  background-color: var(--surface-color);
+  border-radius: 10px;
+  padding: 20px;
+  margin: 20px 0; /* Reduced top margin */
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  border: 1px solid var(--border-color);
+}
+#roleGraphVisualization {
+  width: 100%;
+  height: 700px; /* Increased height */
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+.visualization-controls {
+  margin-bottom: 15px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.visualization-controls button {
+  padding: 8px 12px; /* Adjusted padding */
+  background-color: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  font-size: 0.9em;
+}
+.visualization-controls button:hover {
+  background-color: var(--accent-light);
+}
+.visualization-controls input[type="text"] {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 0.9em;
+  min-width: 200px;
+}
+</style>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis/4.21.0/vis.min.css" type="text/css" />
+
+<script type="text/javascript">
+  var graphNodes = JSON.parse('$escapedNodesJson');
+  var graphEdges = JSON.parse('$escapedLinksJson');
+  var network = null;
+  var allNodesDataset = new vis.DataSet(graphNodes);
+  var allEdgesDataset = new vis.DataSet(graphEdges);
+
+  function drawRoleGraph() {
+    var container = document.getElementById('roleGraphVisualization');
+    var data = {
+      nodes: allNodesDataset,
+      edges: allEdgesDataset
+    };
+    var options = {
+      nodes: {
+        shape: 'dot',
+        size: 18, // Slightly larger default size
+        font: { size: 12, face: 'Segoe UI', color: '#333333' },
+        borderWidth: 2,
+        shadow: { enabled: true, size: 5, x: 2, y: 2 }
+      },
+      edges: {
+        width: 2,
+        shadow: false,
+        smooth: { type: 'continuous', roundness: 0.2 },
+        arrows: { to: { enabled: true, scaleFactor: 0.7 } }
+      },
+      physics: {
+        enabled: true,
+        solver: 'barnesHut',
+        barnesHut: {
+          gravitationalConstant: -15000, // Adjusted for better spread
+          centralGravity: 0.1, // Pulls nodes slightly to center
+          springLength: 150,    // Default spring length
+          springConstant: 0.05,
+          damping: 0.09
+        },
+        stabilization: { iterations: 150 } // Fewer iterations for faster load
+      },
+      layout: {
+        hierarchical: false // Using physics-based layout
+      },
+      groups: {
+        role:  { color: { background:'#28a745', border:'#208A38' }, shape: 'icon', icon: { face: 'FontAwesome', code: '\uf508', size: 30, color: 'white'}}, // Shield icon
+        group: { color: { background:'#007bff', border:'#0062CC' }, shape: 'icon', icon: { face: 'FontAwesome', code: '\uf0c0', size: 30, color: 'white'}}, // Users icon
+        user:  { color: { background:'#6c757d', border:'#545B62' }, shape: 'icon', icon: { face: 'FontAwesome', code: '\uf007', size: 25, color: 'white'}}  // User icon
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        navigationButtons: true, // Adds zoom buttons
+        keyboard: true // Allows keyboard navigation
+      }
+    };
+    network = new vis.Network(container, data, options);
+
+    network.on("doubleClick", function (params) {
+      if (params.nodes.length > 0) {
+        var nodeId = params.nodes[0];
+        network.focus(nodeId, { scale: 1.5, animation: true });
+      }
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    if (graphNodes.length > 0) {
+      drawRoleGraph();
+    } else {
+      document.getElementById('roleGraphVisualization').innerHTML = '<p style="text-align:center;padding-top:20px;">No data available to display the relationship diagram.</p>';
+    }
+  });
+
+  var originalNodesState = {}; // To store original color/size for reset
+  allNodesDataset.getIds().forEach(function(nodeId){
+    var node = allNodesDataset.get(nodeId);
+    originalNodesState[nodeId] = { color: node.color, size: node.size };
+  });
+
+
+  function searchGraphNodes() {
+    var input = document.getElementById('graphSearchNodes');
+    var filter = input.value.toLowerCase();
+    var nodesToUpdate = [];
+
+    allNodesDataset.forEach(function(node) {
+      var labelMatch = node.label.toLowerCase().includes(filter);
+      var titleMatch = node.title ? node.title.toLowerCase().includes(filter) : false;
+      var isVisible = (filter === '') ? true : (labelMatch || titleMatch);
+      
+      var updateObj = { id: node.id };
+      if (filter === '') { // Reset to original
+        updateObj.color = originalNodesState[node.id] ? originalNodesState[node.id].color : node.color; // Fallback to current if somehow not in original
+        updateObj.size = originalNodesState[node.id] ? originalNodesState[node.id].size : node.size;
+      } else {
+        if (labelMatch || titleMatch) {
+          updateObj.color = { background: '#FFD700', border: '#FFA500' }; // Highlight color
+          updateObj.size = 25; // Emphasize size
+        } else { // Dim non-matching nodes
+          updateObj.color = { background: '#e0e0e0', border: '#cccccc' };
+          updateObj.size = 10;
+        }
+      }
+      nodesToUpdate.push(updateObj);
+    });
+    allNodesDataset.update(nodesToUpdate);
+  }
+  
+  var hiddenNodeTypes = new Set();
+  function toggleGraphNodeType(type) {
+    if (hiddenNodeTypes.has(type)) {
+        hiddenNodeTypes.delete(type);
+    } else {
+        hiddenNodeTypes.add(type);
+    }
+    var view = new vis.DataView(allNodesDataset, {
+        filter: function (item) {
+            return !hiddenNodeTypes.has(item.group);
+        }
+    });
+    network.setData({nodes: view, edges: allEdgesDataset});
+  }
+
+  function resetGraphView() {
+    if (network) {
+        hiddenNodeTypes.clear();
+        var view = new vis.DataView(allNodesDataset, {
+            filter: function (item) { return true; } // Show all
+        });
+        network.setData({nodes: view, edges: allEdgesDataset});
+        network.fit({animation: true}); // Fit all nodes back into view
+        document.getElementById('graphSearchNodes').value = ''; // Clear search
+        searchGraphNodes(); // Apply empty search to reset highlights
+    }
+  }
+
+</script>
+"@
+  return $diagramHtml
+}
+
 # Combine HTML content and save to file
 $permissionsMatrixHtml = Generate-PermissionsMatrixHtml
-$htmlComplete = $htmlHeader + ($htmlRolesWithScopeTags -join " ") + $permissionsMatrixHtml + $htmlFooter
+$roleRelationshipDiagramHtml = Generate-RoleRelationshipDiagramHtml -Nodes $script:graphNodes -Links $script:graphLinks
+$htmlComplete = $htmlHeader + $htmlRolesOverviewHeader + ($htmlRolesWithScopeTags -join " ") + $permissionsMatrixHtml + $roleRelationshipDiagramHtml + $htmlFooter
 $htmlComplete | Out-File "rbachealthcheck.html"
