@@ -4,8 +4,6 @@ A comprehensive PowerShell-based tool for managing and auditing Role-Based Acces
 
 > **Note**: The RBAC Health Check Script is currently in preview.
 
-_(Image removed as it may not reflect the latest version)_
-
 ## Features
 
 - **RBAC Health Check**: Generates an interactive HTML report analyzing your Intune RBAC configuration, including:
