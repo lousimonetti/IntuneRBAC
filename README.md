@@ -2,7 +2,8 @@
 
 A comprehensive PowerShell-based tool for managing and auditing Role-Based Access Control (RBAC) in Microsoft Intune. This tool provides detailed insights into your Intune RBAC configuration, including role assignments, scope tags, and permissions.
 
-> **Note**: The RBAC Health Check Script is currently in preview.
+![grafik](https://github.com/user-attachments/assets/556309aa-9aec-4982-aca2-b5515e08cd39)
+
 
 ## Features
 
