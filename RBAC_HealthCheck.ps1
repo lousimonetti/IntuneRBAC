@@ -5,7 +5,7 @@ Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Rea
 $tenantInfo = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization" -Method GET
 $tenantName = $tenantInfo.value[0].displayName
 $lastUpdated = Get-Date -Format "MMMM dd, yyyy HH:mm"
-$version = "0.2.2"
+$version = "0.2.3"
 
 # Data processing for charts
 $rolesWithScopeTagsCount = 0
@@ -13,33 +13,12 @@ $rolesWithoutScopeTagsCount = 0
 $customRolesCount = 0
 $builtInRolesCount = 0
 $unusedRolesCount = 0
-$rolesWithExcessivePermissionsCount = 0
-$rolesWithPermissionGapsCount = 0
 $rolesWithOverlappingPermissionsCount = 0
 $script:allPermissionsMatrixData = @{}
 $script:allRoleNamesForMatrixData = [System.Collections.Generic.List[string]]::new()
 $script:graphNodes = [System.Collections.Generic.List[object]]::new()
 $script:graphLinks = [System.Collections.Generic.List[object]]::new()
 $script:processedGraphNodeIds = [System.Collections.Generic.HashSet[string]]::new()
-
-# Define critical permissions that should be present in roles
-$criticalPermissions = @{
-  'Mobile Apps' = @(
-    "Microsoft.Intune_MobileApps_Read"
-  )
-  'Devices'     = @(
-    "Microsoft.Intune_Devices_Read"
-  )
-  'Policies'    = @(
-    "Microsoft.Intune_DeviceConfigurations_Read"
-  )
-  'Security'    = @(
-    "Microsoft.Intune_Security_Read"
-  )
-}
-
-# Define excessive permissions thresholds
-$excessivePermissionsThreshold = 50  # Flag roles with more than 50 permissions
 
 # Fetch all roles first
 $rolesUri = "https://graph.microsoft.com/beta/deviceManagement/roleDefinitions"
@@ -187,36 +166,6 @@ function Get-CategorizedPermissions {
   return $categories
 }
 
-# Function to check for permission gaps
-function Get-PermissionGaps {
-  param($allowedActions)
-  
-  $gaps = @{}
-  $categorizedPermissions = Get-CategorizedPermissions -actions $allowedActions
-  
-  foreach ($category in $criticalPermissions.Keys) {
-    $missingPermissions = @()
-    foreach ($criticalPerm in $criticalPermissions[$category]) {
-      if ($allowedActions -notcontains $criticalPerm) {
-        $missingPermissions += $criticalPerm.Replace("Microsoft.Intune_", "")
-      }
-    }
-    
-    if ($missingPermissions.Count -gt 0) {
-      $gaps[$category] = $missingPermissions
-    }
-  }
-  
-  return $gaps
-}
-
-# Function to check for excessive permissions
-function Test-ExcessivePermissions {
-  param($allowedActions)
-  
-  return $allowedActions.Count -gt $excessivePermissionsThreshold
-}
-
 # Function to check for unused roles
 function Test-UnusedRole {
   param($roleId)
@@ -325,15 +274,10 @@ function Get-RolesWithScopeTags {
 
     # Security Analysis
     $isUnused = Test-UnusedRole -roleId $role.id
-    $hasExcessivePermissions = Test-ExcessivePermissions -allowedActions $allowedActions
-    $permissionGaps = Get-PermissionGaps -allowedActions $allowedActions
-    $hasPermissionGaps = $permissionGaps.Count -gt 0
     $hasOverlappingPermissions = $overlappingPermissions[$role.id].Count -gt 0
     
     # Update counters
     if ($isUnused) { $script:unusedRolesCount++ }
-    if ($hasExcessivePermissions) { $script:rolesWithExcessivePermissionsCount++ }
-    if ($hasPermissionGaps) { $script:rolesWithPermissionGapsCount++ }
     if ($hasOverlappingPermissions) { $script:rolesWithOverlappingPermissionsCount++ }
 
     $roleType = if ($role.isBuiltIn) { "Built-In Role" } else { "Custom Role" }
@@ -356,12 +300,6 @@ function Get-RolesWithScopeTags {
     $securityBadges = "<div class='accordion-badges'>"
     if ($isUnused) {
       $securityBadges += "<span class='security-badge warning'><i class='fas fa-exclamation-triangle'></i> Unused Role</span>"
-    }
-    if ($hasExcessivePermissions) {
-      $securityBadges += "<span class='security-badge warning'><i class='fas fa-exclamation-triangle'></i> Excessive Permissions</span>"
-    }
-    if ($hasPermissionGaps) {
-      $securityBadges += "<span class='security-badge warning'><i class='fas fa-exclamation-triangle'></i> Permission Gaps</span>"
     }
     if ($hasOverlappingPermissions) {
       $securityBadges += "<span class='security-badge info'><i class='fas fa-info-circle'></i> Overlapping Permissions</span>"
@@ -411,34 +349,11 @@ function Get-RolesWithScopeTags {
     }
     $htmlContent += "</div>" # Close panel-top
     
-    # Security Analysis Section
-    if ($hasPermissionGaps -or $hasExcessivePermissions -or $hasOverlappingPermissions) {
+    # Security Analysis Section (Only show if overlaps exist)
+    if ($hasOverlappingPermissions) {
       $htmlContent += "<div class='security-analysis'>"
       $htmlContent += "<h3><i class='fas fa-shield-alt'></i>Security Analysis</h3>"
-      
-      # Permission Gaps
-      if ($hasPermissionGaps) {
-        $htmlContent += "<div class='security-section warning-section'>"
-        $htmlContent += "<h4><i class='fas fa-exclamation-triangle'></i>Permission Gaps</h4>"
-        $htmlContent += "<p>This role is missing critical permissions that may be required for proper functionality:</p>"
-        $htmlContent += "<ul class='gap-list'>"
-        foreach ($category in $permissionGaps.Keys) {
-          $categoryName = $category
-          $htmlContent += "<li><strong>$categoryName</strong>: $($permissionGaps[$category] -join ', ')</li>"
-        }
-        $htmlContent += "</ul>"
-        $htmlContent += "</div>"
-      }
-      
-      # Excessive Permissions
-      if ($hasExcessivePermissions) {
-        $htmlContent += "<div class='security-section warning-section'>"
-        $htmlContent += "<h4><i class='fas fa-exclamation-triangle'></i>Excessive Permissions</h4>"
-        $htmlContent += "<p>This role has $($allowedActions.Count) permissions, which exceeds the recommended threshold of $excessivePermissionsThreshold.</p>"
-        $htmlContent += "<p>Consider reviewing and potentially splitting this role to follow the principle of least privilege.</p>"
-        $htmlContent += "</div>"
-      }
-      
+            
       # Overlapping Permissions
       if ($hasOverlappingPermissions) {
         $htmlContent += "<div class='security-section info-section'>"
@@ -685,7 +600,9 @@ $htmlHeader = @"
   --border-color: #E2E8F0;
   --error-color: #EF476F;
   --warning-color: #FF9F1C;
+  --warning-rgb: 255, 159, 28; /* RGB for rgba */
   --info-color: #2196F3;
+  --info-rgb: 33, 150, 243; /* RGB for rgba */
 }
 
 body {
@@ -717,7 +634,7 @@ body {
   right: 0;
   bottom: 0;
   background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-  opacity: 0.1;
+  opacity: 0.07; /* Slightly reduced opacity */
 }
 
 .hero-content {
@@ -834,7 +751,20 @@ h2 {
   color: var(--accent-color);
   font-size: 1.8em;
   margin-top: 30px;
+  display: flex; /* Added for icon alignment */
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px; /* Added default bottom margin */
 }
+
+/* Specific spacing for headers within stats container */
+.stats-container h2 {
+    margin-bottom: 25px; /* Increased bottom margin */
+}
+#security-analysis-section { /* Target the h2 directly */
+    margin-top: 45px; /* Increased top margin */
+}
+
 
 .stats-container {
   background-color: var(--surface-color);
@@ -849,37 +779,63 @@ h2 {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); /* Adjusted minmax */
+  gap: 25px; /* Increased gap */
   margin-top: 20px;
 }
 
 .stat-card {
   background-color: var(--card-background);
-  padding: 20px;
-  border-radius: 8px;
-  text-align: center;
-  transition: transform 0.2s;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  padding: 25px 20px; /* Adjusted padding */
+  border-radius: 12px; /* Softer radius */
+  transition: all 0.3s ease; /* Smoother transition */
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05); /* Softer shadow */
   border: 1px solid var(--border-color);
+  display: flex; /* Use flexbox */
+  flex-direction: column;
+  align-items: center; /* Center items horizontally */
+  justify-content: center; /* Center items vertically */
+  gap: 5px; /* Reduced gap between elements */
+  position: relative; /* For potential absolute elements later */
+  overflow: hidden; /* Hide overflow if needed */
+  text-align: center; /* Ensure text is centered */
 }
 
 .stat-card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-6px); /* Slightly more lift */
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08); /* Enhanced shadow on hover */
+}
+
+.stat-card-icon {
+  font-size: 1.6em; /* Icon size */
+  color: var(--accent-color); /* Default icon color */
+  margin-bottom: 10px; /* Space below icon */
+  line-height: 1; /* Ensure icon aligns well */
 }
 
 .stat-number {
-  font-size: 2.5em;
-  font-weight: bold;
+  font-size: 2.6em; /* Slightly larger number */
+  font-weight: 600; /* Slightly less bold */
   color: var(--primary-color);
-  margin: 10px 0;
+  margin: 0; /* Remove default margin */
+  line-height: 1.1;
 }
 
 .stat-label {
   color: var(--text-color);
-  font-size: 1.1em;
+  font-size: 1em; /* Slightly smaller label */
+  margin-top: 5px; /* Space above label */
+  line-height: 1.3;
 }
+
+/* Specific icon colors for warning/info cards */
+.stat-card.warning .stat-card-icon {
+    color: var(--warning-color);
+}
+.stat-card.info .stat-card-icon {
+    color: var(--info-color);
+}
+
 
 .chart-container {
   display: grid;
@@ -1248,14 +1204,18 @@ h2 {
 }
 
 .stat-card.warning {
-    border-left: 4px solid var(--warning-color);
+    border-left: 5px solid var(--warning-color); /* Thicker border */
+    background-color: rgba(var(--warning-rgb), 0.03); /* Subtle background tint */
 }
 
 .stat-card.info {
-    border-left: 4px solid var(--info-color);
+    border-left: 5px solid var(--info-color); /* Thicker border */
+    background-color: rgba(var(--info-rgb), 0.03); /* Subtle background tint */
 }
 
-.stat-card.critical {
+/* Removed .stat-card.critical as the feature was removed */
+
+@media screen and (max-width: 768px) {
     border-left: 4px solid var(--error-color); /* Match badge color */
 }
 
@@ -1428,37 +1388,34 @@ $navigationButtons
 <div class="container">
   <!-- Statistics Section -->
   <div class='stats-container' id='rbac-statistics-section'>
-    <h2>RBAC Statistics</h2>
+    <h2><i class='fas fa-chart-pie'></i>RBAC Statistics</h2>
     <div class='stats-grid'>
       <div class='stat-card'>
+        <div class='stat-card-icon'><i class='fas fa-users-cog'></i></div>
         <div class='stat-number'>$totalRolesCount</div>
         <div class='stat-label'>Total Intune Roles</div>
       </div>
       <div class='stat-card'>
+        <div class='stat-card-icon'><i class='fas fa-user-edit'></i></div>
         <div class='stat-number'>$customRolesCount</div>
         <div class='stat-label'>Custom Roles</div>
       </div>
       <div class='stat-card'>
+        <div class='stat-card-icon'><i class='fas fa-tags'></i></div>
         <div class='stat-number'>$scopeTagsCount</div>
         <div class='stat-label'>Scope Tags</div>
       </div>
     </div>
     
-    <h2 id='security-analysis-section'>Security Analysis</h2>
+    <h2 id='security-analysis-section'><i class='fas fa-shield-alt'></i>Security Analysis</h2>
     <div class='stats-grid'>
       <div class='stat-card warning'>
+        <div class='stat-card-icon'><i class='fas fa-ban'></i></div>
         <div class='stat-number'>$unusedRolesCount</div>
         <div class='stat-label'>Unused Roles</div>
       </div>
-      <div class='stat-card warning'>
-        <div class='stat-number'>$rolesWithExcessivePermissionsCount</div>
-        <div class='stat-label'>Roles with Excessive Permissions</div>
-      </div>
-      <div class='stat-card warning'>
-        <div class='stat-number'>$rolesWithPermissionGapsCount</div>
-        <div class='stat-label'>Roles with Permission Gaps</div>
-      </div>
       <div class='stat-card info'>
+        <div class='stat-card-icon'><i class='fas fa-layer-group'></i></div>
         <div class='stat-number'>$rolesWithOverlappingPermissionsCount</div>
         <div class='stat-label'>Roles with Overlapping Permissions</div>
       </div>
