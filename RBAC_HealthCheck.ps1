@@ -19,265 +19,268 @@ $response = Invoke-MgGraphRequest -Uri $rolesUri -Method GET
 
 # Process the roles for counting
 foreach ($role in $response.value) {
-    if ($role.roleScopeTagIds.Count -gt 0) {
-        $rolesWithScopeTagsCount++
-    } else {
-        $rolesWithoutScopeTagsCount++
-    }
+  if ($role.roleScopeTagIds.Count -gt 0) {
+    $rolesWithScopeTagsCount++
+  }
+  else {
+    $rolesWithoutScopeTagsCount++
+  }
 
-    if ($role.isBuiltIn) {
-        $builtInRolesCount++
-    } else {
-        $customRolesCount++
-    }
+  if ($role.isBuiltIn) {
+    $builtInRolesCount++
+  }
+  else {
+    $customRolesCount++
+  }
 }
 
 function Get-RoleAssignments {
-    param($roleId)
-    $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/roleDefinitions('$roleId')/roleAssignments"
+  param($roleId)
+  $assignmentsUri = "https://graph.microsoft.com/beta/deviceManagement/roleDefinitions('$roleId')/roleAssignments"
 
-    $response = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET
+  $response = Invoke-MgGraphRequest -Uri $assignmentsUri -Method GET
 
-    $assignments = @()
-    foreach ($assignment in $response.value) {
-        $assignments += [PSCustomObject]@{
-            DisplayName = $assignment.displayName
-            RoleDefinitionId = $assignment.id
-        }
+  $assignments = @()
+  foreach ($assignment in $response.value) {
+    $assignments += [PSCustomObject]@{
+      DisplayName      = $assignment.displayName
+      RoleDefinitionId = $assignment.id
     }
+  }
 
-    if ($response.'@odata.nextLink') {
-        $assignments += Get-RoleAssignments -roleId $roleId
-    }
+  if ($response.'@odata.nextLink') {
+    $assignments += Get-RoleAssignments -roleId $roleId
+  }
 
-    return $assignments
+  return $assignments
 }
 
 function Get-RoleMembers {
-    param($roleDefinitionId)
-    $membersUri = "https://graph.microsoft.com/beta/deviceManagement/roleAssignments('$roleDefinitionId')`?$expand=microsoft.graph.deviceAndAppManagementRoleAssignment/roleScopeTags"
+  param($roleDefinitionId)
+  $membersUri = "https://graph.microsoft.com/beta/deviceManagement/roleAssignments('$roleDefinitionId')`?$expand=microsoft.graph.deviceAndAppManagementRoleAssignment/roleScopeTags"
 
-    $response = Invoke-MgGraphRequest -Uri $membersUri -Method GET
+  $response = Invoke-MgGraphRequest -Uri $membersUri -Method GET
 
-    $members = @()
-    foreach ($member in $response) {
-        $groupId = $member.members -join ", " # Assuming there's only one group per member
+  $members = @()
+  foreach ($member in $response) {
+    $groupId = $member.members -join ", " # Assuming there's only one group per member
 
-        # Fetch the group name
-        $groupUri = "https://graph.microsoft.com/beta/groups/$groupId"
-        $groupResponse = Invoke-MgGraphRequest -Uri $groupUri -Method GET
-        $groupName = $groupResponse.displayName
+    # Fetch the group name
+    $groupUri = "https://graph.microsoft.com/beta/groups/$groupId"
+    $groupResponse = Invoke-MgGraphRequest -Uri $groupUri -Method GET
+    $groupName = $groupResponse.displayName
 
-        $members += [PSCustomObject]@{
-            RoleAssignmentName = $member.displayName
-            RoleAssignmentId = $member.id
-            GroupId = $groupId
-            GroupName = $groupName
-        }
+    $members += [PSCustomObject]@{
+      RoleAssignmentName = $member.displayName
+      RoleAssignmentId   = $member.id
+      GroupId            = $groupId
+      GroupName          = $groupName
     }
+  }
 
-    return $members
+  return $members
 }
 
 function Get-GroupMembers {
-    param($groupId)
+  param($groupId)
 
-    $groupMembersUri = "https://graph.microsoft.com/beta/groups/$groupId/members"
-    $response = Invoke-MgGraphRequest -Uri $groupMembersUri -Method GET
+  $groupMembersUri = "https://graph.microsoft.com/beta/groups/$groupId/members"
+  $response = Invoke-MgGraphRequest -Uri $groupMembersUri -Method GET
 
-    $userIds = @()
-    foreach ($member in $response.value) {
-        if ($member.id) {
-            $userIds += $member.id
-        }
+  $userIds = @()
+  foreach ($member in $response.value) {
+    if ($member.id) {
+      $userIds += $member.id
     }
+  }
 
-    # Check for pagination
-    if ($response.'@odata.nextLink') {
-        $userIds += Get-GroupMembers -groupId $groupId
+  # Check for pagination
+  if ($response.'@odata.nextLink') {
+    $userIds += Get-GroupMembers -groupId $groupId
+  }
+
+  $upns = @()
+  foreach ($userId in $userIds) {
+    $userUri = "https://graph.microsoft.com/beta/users/$userId"
+    $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
+    if ($userResponse.userPrincipalName) {
+      $upns += $userResponse.userPrincipalName
     }
+  }
 
-    $upns = @()
-    foreach ($userId in $userIds) {
-        $userUri = "https://graph.microsoft.com/beta/users/$userId"
-        $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
-        if ($userResponse.userPrincipalName) {
-            $upns += $userResponse.userPrincipalName
-        }
-    }
-
-    return $upns
+  return $upns
 }
 
 function Get-ScopeTags {
-    param($Uri)
-    $response = Invoke-MgGraphRequest -Uri $Uri -Method GET
-    $scopeTags = @{}
+  param($Uri)
+  $response = Invoke-MgGraphRequest -Uri $Uri -Method GET
+  $scopeTags = @{}
 
-    foreach ($tag in $response.value) {
-        $scopeTags[$tag.id] = @{
-            DisplayName = $tag.displayName
-            Description = $tag.description
-        }
+  foreach ($tag in $response.value) {
+    $scopeTags[$tag.id] = @{
+      DisplayName = $tag.displayName
+      Description = $tag.description
     }
+  }
 
-    if ($response.'@odata.nextLink') {
-        $scopeTags += Get-ScopeTags -Uri $response.'@odata.nextLink'
-    }
+  if ($response.'@odata.nextLink') {
+    $scopeTags += Get-ScopeTags -Uri $response.'@odata.nextLink'
+  }
 
-    return $scopeTags
+  return $scopeTags
 }
 
 # Function to categorize permissions
 function Get-CategorizedPermissions {
-    param($actions)
-    $categories = @{
-        'Mobile Apps' = @()
-        'Managed Apps' = @()
-        'Devices' = @()
-        'Policies' = @()
-        'Filters' = @()
-        'Security' = @()
-        'Other' = @()
-        'Cloud Attach' = @()
-    }
+  param($actions)
+  $categories = @{
+    'Mobile Apps'  = @()
+    'Managed Apps' = @()
+    'Devices'      = @()
+    'Policies'     = @()
+    'Filters'      = @()
+    'Security'     = @()
+    'Other'        = @()
+    'Cloud Attach' = @()
+  }
 
-    foreach ($action in $actions) {
-        switch -Wildcard ($action) {
-            "Microsoft.Intune_MobileApps_*" { $categories['Mobile Apps'] += $action.Replace("Microsoft.Intune_", "") }
-            "Microsoft.Intune_ManagedApps_*" { $categories['Managed Apps'] += $action.Replace("Microsoft.Intune_", "") }
-            "Microsoft.Intune_Devices_*" { $categories['Devices'] += $action.Replace("Microsoft.Intune_", "") }
-            "Microsoft.Intune_DeviceConfigurations_*" { $categories['Policies'] += $action.Replace("Microsoft.Intune_", "") }
-            "Microsoft.Intune_Filter_*" { $categories['Filters'] += $action.Replace("Microsoft.Intune_", "") }
-            "Microsoft.Intune_Security*" { $categories['Security'] += $action.Replace("Microsoft.Intune_", "") }
-            "Microsoft.Intune_CloudAttach_*" { $categories['Cloud Attach'] += $action.Replace("Microsoft.Intune_", "") }
-            default { $categories['Other'] += $action.Replace("Microsoft.Intune_", "") }
-        }
+  foreach ($action in $actions) {
+    switch -Wildcard ($action) {
+      "Microsoft.Intune_MobileApps_*" { $categories['Mobile Apps'] += $action.Replace("Microsoft.Intune_", "") }
+      "Microsoft.Intune_ManagedApps_*" { $categories['Managed Apps'] += $action.Replace("Microsoft.Intune_", "") }
+      "Microsoft.Intune_Devices_*" { $categories['Devices'] += $action.Replace("Microsoft.Intune_", "") }
+      "Microsoft.Intune_DeviceConfigurations_*" { $categories['Policies'] += $action.Replace("Microsoft.Intune_", "") }
+      "Microsoft.Intune_Filter_*" { $categories['Filters'] += $action.Replace("Microsoft.Intune_", "") }
+      "Microsoft.Intune_Security*" { $categories['Security'] += $action.Replace("Microsoft.Intune_", "") }
+      "Microsoft.Intune_CloudAttach_*" { $categories['Cloud Attach'] += $action.Replace("Microsoft.Intune_", "") }
+      default { $categories['Other'] += $action.Replace("Microsoft.Intune_", "") }
     }
-    return $categories
+  }
+  return $categories
 }
 
 # Function to Fetch Roles and their Scope Tags
 function Get-RolesWithScopeTags {
-    param(
-        $Uri, 
-        $ScopeTags
-    )
-    $response = Invoke-MgGraphRequest -Uri $Uri -Method GET
+  param(
+    $Uri, 
+    $ScopeTags
+  )
+  $response = Invoke-MgGraphRequest -Uri $Uri -Method GET
 
-    $htmlContent = @()
+  $htmlContent = @()
 
-    foreach ($role in $response.value) {
-        $allowedActions = @()
-        foreach ($perm in $role.rolePermissions) {
-            foreach ($action in $perm.resourceActions) {
-                $allowedActions += $action.allowedResourceActions
-            }
-        }
-
-        $roleType = if ($role.isBuiltIn) { "Built-In Role" } else { "Custom Role" }
-        
-        # Format scope tag information
-        $scopeTagInfo = ""
-        if ($role.roleScopeTagIds.Count -gt 0) {
-            $scopeTags = @()
-            foreach ($tagId in $role.roleScopeTagIds) {
-                $tagDetails = $ScopeTags[$tagId]
-                $scopeTags += $tagDetails.DisplayName
-            }
-            $scopeTagInfo = "<div class='scope-tag'><strong>Scope Tag:</strong> $($scopeTags -join ', ')</div>"
-        } else {
-            $scopeTagInfo = "<div class='no-scope-tag'>No Scope Tag assigned</div>"
-        }
-
-        # Start the accordion for each role
-        $htmlContent += "<button class='accordion'><strong>$($role.displayName)</strong></button>"
-        $htmlContent += "<div class='panel'>"
-        $htmlContent += "<div class='panel-content'>"
-
-        # Top Panel with Basic Info and Role Assignments side by side
-        $htmlContent += "<div class='panel-top'>"
-        
-        # Basic Info Section
-        $htmlContent += "<div class='panel-top-section'>"
-        $htmlContent += "<h3><i class='fas fa-info-circle'></i>Basic Information</h3>"
-        $htmlContent += "<p><strong>Description:</strong> $($role.description)</p>"
-        $htmlContent += "<p><strong>Type:</strong> $roleType</p>"
-        $htmlContent += $scopeTagInfo
-        $htmlContent += "</div>"
-
-        # Role Assignment Section (if exists)
-        $roleAssignments = Get-RoleAssignments -roleId $role.id
-        if ($roleAssignments) {
-            $htmlContent += "<div class='panel-top-section'>"
-            $htmlContent += "<h3><i class='fas fa-users'></i>Role Assignments</h3>"
-            foreach ($assignment in $roleAssignments) {
-                $roleMembers = Get-RoleMembers -roleDefinitionId $assignment.RoleDefinitionId
-                foreach ($member in $roleMembers) {
-                    $groupMembers = Get-GroupMembers -groupId $member.GroupId
-                    $upns = $groupMembers -join ", "
-
-                    $htmlContent += "<p><strong>Assignment:</strong> $($member.RoleAssignmentName)</p>"
-                    $htmlContent += "<p><strong>Group:</strong> $($member.GroupName)</p>"
-                    $htmlContent += "<p><strong>Members:</strong> $upns</p>"
-                }
-            }
-            $htmlContent += "</div>"
-        }
-        $htmlContent += "</div>" # Close panel-top
-
-        # Bottom Panel (Resource Actions)
-        $htmlContent += "<div class='panel-bottom'>"
-        if ($allowedActions) {
-            $categories = Get-CategorizedPermissions -actions $allowedActions
-            $totalPermissions = ($allowedActions | Measure-Object).Count
-            $categoryCount = ($categories.Keys | Where-Object { $categories[$_].Count -gt 0 } | Measure-Object).Count
-
-            $htmlContent += "<div class='resource-actions'>"
-            $htmlContent += "<div class='resource-actions-header'>"
-            $htmlContent += "<div class='resource-actions-title'>"
-            $htmlContent += "<h3><i class='fas fa-shield-alt'></i>Allowed Resource Actions</h3>"
-            $htmlContent += "<span class='resource-actions-count'>This role has $totalPermissions permissions across $categoryCount categories</span>"
-            $htmlContent += "</div>"
-            $htmlContent += "<input type='text' class='permission-search' placeholder='Search permissions...' onkeyup='filterPermissions(this)'>"
-            $htmlContent += "</div>"
-
-            # Tabs
-            $htmlContent += "<div class='permission-tabs'>"
-            $htmlContent += "<button class='permission-tab active' onclick='showCategory(this, `"all`")'>All Permissions</button>"
-            foreach ($category in $categories.Keys | Where-Object { $categories[$_].Count -gt 0 }) {
-                $htmlContent += "<button class='permission-tab' onclick='showCategory(this, `"$category`")'>$category</button>"
-            }
-            $htmlContent += "</div>"
-
-            # Categories
-            foreach ($category in $categories.Keys) {
-                if ($categories[$category].Count -gt 0) {
-                    $htmlContent += "<div class='permission-category' data-category='$category'>"
-                    $htmlContent += "<div class='category-header'>"
-                    $htmlContent += "<span class='category-title'>$category</span>"
-                    $htmlContent += "<span class='category-count'>$($categories[$category].Count)</span>"
-                    $htmlContent += "</div>"
-                    $htmlContent += "<div class='permission-list'>"
-                    foreach ($permission in $categories[$category]) {
-                        $htmlContent += "<div class='permission-item'>"
-                        $htmlContent += "<span class='permission-icon'></span>"
-                        $htmlContent += "<span class='permission-name'>$permission</span>"
-                        $htmlContent += "</div>"
-                    }
-                    $htmlContent += "</div>"
-                    $htmlContent += "</div>"
-                }
-            }
-            $htmlContent += "</div>" # Close resource-actions
-        }
-        $htmlContent += "</div>" # Close panel-bottom
-
-        $htmlContent += "</div>" # Close panel-content
-        $htmlContent += "</div>" # Close panel
+  foreach ($role in $response.value) {
+    $allowedActions = @()
+    foreach ($perm in $role.rolePermissions) {
+      foreach ($action in $perm.resourceActions) {
+        $allowedActions += $action.allowedResourceActions
+      }
     }
 
-    return $htmlContent
+    $roleType = if ($role.isBuiltIn) { "Built-In Role" } else { "Custom Role" }
+        
+    # Format scope tag information
+    $scopeTagInfo = ""
+    if ($role.roleScopeTagIds.Count -gt 0) {
+      $scopeTags = @()
+      foreach ($tagId in $role.roleScopeTagIds) {
+        $tagDetails = $ScopeTags[$tagId]
+        $scopeTags += $tagDetails.DisplayName
+      }
+      $scopeTagInfo = "<div class='scope-tag'><strong>Scope Tag:</strong> $($scopeTags -join ', ')</div>"
+    }
+    else {
+      $scopeTagInfo = "<div class='no-scope-tag'>No Scope Tag assigned</div>"
+    }
+
+    # Start the accordion for each role
+    $htmlContent += "<button class='accordion'><strong>$($role.displayName)</strong></button>"
+    $htmlContent += "<div class='panel'>"
+    $htmlContent += "<div class='panel-content'>"
+
+    # Top Panel with Basic Info and Role Assignments side by side
+    $htmlContent += "<div class='panel-top'>"
+        
+    # Basic Info Section
+    $htmlContent += "<div class='panel-top-section'>"
+    $htmlContent += "<h3><i class='fas fa-info-circle'></i>Basic Information</h3>"
+    $htmlContent += "<p><strong>Description:</strong> $($role.description)</p>"
+    $htmlContent += "<p><strong>Type:</strong> $roleType</p>"
+    $htmlContent += $scopeTagInfo
+    $htmlContent += "</div>"
+
+    # Role Assignment Section (if exists)
+    $roleAssignments = Get-RoleAssignments -roleId $role.id
+    if ($roleAssignments) {
+      $htmlContent += "<div class='panel-top-section'>"
+      $htmlContent += "<h3><i class='fas fa-users'></i>Role Assignments</h3>"
+      foreach ($assignment in $roleAssignments) {
+        $roleMembers = Get-RoleMembers -roleDefinitionId $assignment.RoleDefinitionId
+        foreach ($member in $roleMembers) {
+          $groupMembers = Get-GroupMembers -groupId $member.GroupId
+          $upns = $groupMembers -join ", "
+
+          $htmlContent += "<p><strong>Assignment:</strong> $($member.RoleAssignmentName)</p>"
+          $htmlContent += "<p><strong>Group:</strong> $($member.GroupName)</p>"
+          $htmlContent += "<p><strong>Members:</strong> $upns</p>"
+        }
+      }
+      $htmlContent += "</div>"
+    }
+    $htmlContent += "</div>" # Close panel-top
+
+    # Bottom Panel (Resource Actions)
+    $htmlContent += "<div class='panel-bottom'>"
+    if ($allowedActions) {
+      $categories = Get-CategorizedPermissions -actions $allowedActions
+      $totalPermissions = ($allowedActions | Measure-Object).Count
+      $categoryCount = ($categories.Keys | Where-Object { $categories[$_].Count -gt 0 } | Measure-Object).Count
+
+      $htmlContent += "<div class='resource-actions'>"
+      $htmlContent += "<div class='resource-actions-header'>"
+      $htmlContent += "<div class='resource-actions-title'>"
+      $htmlContent += "<h3><i class='fas fa-shield-alt'></i>Allowed Resource Actions</h3>"
+      $htmlContent += "<span class='resource-actions-count'>This role has $totalPermissions permissions across $categoryCount categories</span>"
+      $htmlContent += "</div>"
+      $htmlContent += "<input type='text' class='permission-search' placeholder='Search permissions...' onkeyup='filterPermissions(this)'>"
+      $htmlContent += "</div>"
+
+      # Tabs
+      $htmlContent += "<div class='permission-tabs'>"
+      $htmlContent += "<button class='permission-tab active' onclick='showCategory(this, `"all`")'>All Permissions</button>"
+      foreach ($category in $categories.Keys | Where-Object { $categories[$_].Count -gt 0 }) {
+        $htmlContent += "<button class='permission-tab' onclick='showCategory(this, `"$category`")'>$category</button>"
+      }
+      $htmlContent += "</div>"
+
+      # Categories
+      foreach ($category in $categories.Keys) {
+        if ($categories[$category].Count -gt 0) {
+          $htmlContent += "<div class='permission-category' data-category='$category'>"
+          $htmlContent += "<div class='category-header'>"
+          $htmlContent += "<span class='category-title'>$category</span>"
+          $htmlContent += "<span class='category-count'>$($categories[$category].Count)</span>"
+          $htmlContent += "</div>"
+          $htmlContent += "<div class='permission-list'>"
+          foreach ($permission in $categories[$category]) {
+            $htmlContent += "<div class='permission-item'>"
+            $htmlContent += "<span class='permission-icon'></span>"
+            $htmlContent += "<span class='permission-name'>$permission</span>"
+            $htmlContent += "</div>"
+          }
+          $htmlContent += "</div>"
+          $htmlContent += "</div>"
+        }
+      }
+      $htmlContent += "</div>" # Close resource-actions
+    }
+    $htmlContent += "</div>" # Close panel-bottom
+
+    $htmlContent += "</div>" # Close panel-content
+    $htmlContent += "</div>" # Close panel
+  }
+
+  return $htmlContent
 }
 
 # Fetch Scope Tags
