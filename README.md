@@ -21,10 +21,10 @@ _(Image removed as it may not reflect the latest version)_
 - PowerShell 7 or higher
 - Microsoft.Graph PowerShell module
 - Appropriate Microsoft Graph API permissions:
-  - DeviceManagementRBAC.Read.All
-  - DeviceManagementApps.Read.All
-  - DeviceManagementConfiguration.Read.All
-  - User.ReadBasic.All
+  - `DeviceManagementRBAC.Read.All`: Allows reading of Intune role definitions, assignments, and scope tags.
+  - `DeviceManagementApps.Read.All`: Allows reading of application configurations (used for analyzing scope tags on apps).
+  - `DeviceManagementConfiguration.Read.All`: Allows reading of device configuration and policy settings (used for analyzing scope tags on policies).
+  - `User.ReadBasic.All`: Allows reading basic user profiles (needed to get member details for assigned groups).
 
 ## Usage
 
