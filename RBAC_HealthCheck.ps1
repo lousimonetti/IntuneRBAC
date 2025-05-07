@@ -5,7 +5,7 @@ Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Rea
 $tenantInfo = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization" -Method GET
 $tenantName = $tenantInfo.value[0].displayName
 $lastUpdated = Get-Date -Format "MMMM dd, yyyy HH:mm"
-$version = "0.2"
+$version = "0.2.1"
 
 # Data processing for charts
 $rolesWithScopeTagsCount = 0
@@ -16,6 +16,8 @@ $unusedRolesCount = 0
 $rolesWithExcessivePermissionsCount = 0
 $rolesWithPermissionGapsCount = 0
 $rolesWithOverlappingPermissionsCount = 0
+$script:allPermissionsMatrixData = @{}
+$script:allRoleNamesForMatrixData = [System.Collections.Generic.List[string]]::new()
 
 # Define critical permissions that should be present in roles
 $criticalPermissions = @{
@@ -288,6 +290,36 @@ function Get-RolesWithScopeTags {
       }
     }
 
+    # ---- START: Populate data for Permissions Matrix ----
+    if (-not $script:allRoleNamesForMatrixData.Contains($role.displayName)) {
+      $script:allRoleNamesForMatrixData.Add($role.displayName)
+      # When a new role is added, existing permissions in the matrix need an entry for this new role, defaulting to false
+      foreach ($existingPermName in $script:allPermissionsMatrixData.Keys) {
+        if (-not $script:allPermissionsMatrixData[$existingPermName].ContainsKey($role.displayName)) {
+          $script:allPermissionsMatrixData[$existingPermName][$role.displayName] = $false
+        }
+      }
+    }
+
+    foreach ($permissionString in $allowedActions) {
+      $cleanPermissionName = $permissionString.Replace("Microsoft.Intune_", "")
+      if (-not $script:allPermissionsMatrixData.ContainsKey($cleanPermissionName)) {
+        $script:allPermissionsMatrixData[$cleanPermissionName] = @{}
+        # For a new permission, initialize for all known roles with false
+        foreach ($knownRoleName in $script:allRoleNamesForMatrixData) {
+          if (-not $script:allPermissionsMatrixData[$cleanPermissionName].ContainsKey($knownRoleName)) {
+            $script:allPermissionsMatrixData[$cleanPermissionName][$knownRoleName] = $false
+          }
+        }
+      }
+      # Ensure the current role has an entry for this permission
+      if (-not $script:allPermissionsMatrixData[$cleanPermissionName].ContainsKey($role.displayName)) {
+        $script:allPermissionsMatrixData[$cleanPermissionName][$role.displayName] = $false # Initialize if somehow missed
+      }
+      $script:allPermissionsMatrixData[$cleanPermissionName][$role.displayName] = $true
+    }
+    # ---- END: Populate data for Permissions Matrix ----
+
     # Security Analysis
     $isUnused = Test-UnusedRole -roleId $role.id
     $hasExcessivePermissions = Test-ExcessivePermissions -allowedActions $allowedActions
@@ -478,7 +510,48 @@ function Get-RolesWithScopeTags {
     $htmlContent += "</div>" # Close panel
   }
 
+  # Final pass to ensure matrix is complete and sort role names
+  foreach ($permNameKey in $script:allPermissionsMatrixData.Keys) {
+    foreach ($roleNameKey in $script:allRoleNamesForMatrixData) {
+      if (-not $script:allPermissionsMatrixData[$permNameKey].ContainsKey($roleNameKey)) {
+        $script:allPermissionsMatrixData[$permNameKey][$roleNameKey] = $false
+      }
+    }
+  }
+  $script:allRoleNamesForMatrixData.Sort() # Sort roles once after all are collected and matrix is finalized
+
   return $htmlContent
+}
+
+function Generate-PermissionsMatrixHtml {
+  $matrixHtml = @()
+  $matrixHtml += "<h2><i class='fas fa-table'></i> Permissions Matrix</h2>"
+  $matrixHtml += "<div class='permissions-matrix-container'>"
+  $matrixHtml += "<table class='permissions-matrix-table'>"
+  $matrixHtml += "<thead><tr><th>Permission</th>"
+
+  # Role names are already sorted in $script:allRoleNamesForMatrixData by Get-RolesWithScopeTags
+  foreach ($roleName in $script:allRoleNamesForMatrixData) {
+    $matrixHtml += "<th>$($roleName)</th>"
+  }
+  $matrixHtml += "</tr></thead>"
+  $matrixHtml += "<tbody>"
+
+  # Sort permission names for row display
+  $sortedPermissionNames = $script:allPermissionsMatrixData.Keys | Sort-Object
+
+  foreach ($permissionName in $sortedPermissionNames) {
+    $matrixHtml += "<tr><td>$($permissionName)</td>" # Permission names are already cleaned
+    foreach ($roleName in $script:allRoleNamesForMatrixData) {
+      # Use the sorted list for column order
+      $hasPermission = $script:allPermissionsMatrixData[$permissionName].ContainsKey($roleName) -and $script:allPermissionsMatrixData[$permissionName][$roleName]
+      $cellContent = if ($hasPermission) { "<span class='permission-check'>✔️</span>" } else { "<span class='permission-no'></span>" }
+      $matrixHtml += "<td>$cellContent</td>"
+    }
+    $matrixHtml += "</tr>"
+  }
+  $matrixHtml += "</tbody></table></div>"
+  return ($matrixHtml -join "`r`n")
 }
 
 # Fetch Scope Tags
@@ -1122,6 +1195,97 @@ h2 {
 .footer-link:hover {
     color: var(--accent-light);
 }
+
+/* Styles for Permissions Matrix Table */
+.permissions-matrix-container {
+  margin-top: 40px;
+  overflow-x: auto; /* For wide tables */
+  padding-bottom: 20px; /* Space for horizontal scrollbar if needed */
+  background-color: var(--background-color); /* Ensure container has a background for sticky elements */
+}
+
+.permissions-matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  /* background-color: var(--card-background); No background here, let rows/cells define it */
+  border: 1px solid var(--border-color);
+}
+
+.permissions-matrix-table th,
+.permissions-matrix-table td {
+  border: 1px solid var(--border-color);
+  padding: 10px 14px; /* Increased padding */
+  text-align: left;
+  min-width: 120px; /* Minimum width for role columns */
+  background-color: var(--card-background); /* Default cell background */
+}
+
+.permissions-matrix-table th:first-child, /* Permission column header */
+.permissions-matrix-table td:first-child { /* Permission column cells */
+  min-width: 280px; /* Wider for permission names */
+  position: sticky;
+  left: 0;
+  /* background-color will be set by th or tr:nth-child rules */
+  z-index: 2; /* Above normal cells, below main header */
+  border-right: 2px solid var(--primary-dark); /* Emphasize sticky column */
+}
+
+
+.permissions-matrix-table th { /* All header cells */
+  background-color: var(--surface-color);
+  color: var(--primary-color);
+  font-weight: bold;
+  position: sticky;
+  top: 0;
+  z-index: 3; /* Higher z-index for header row */
+  border-bottom: 2px solid var(--primary-dark); /* Emphasize header row */
+}
+
+/* Ensure top-left cell (Permission header) is also sticky and styled correctly */
+.permissions-matrix-table th:first-child {
+    z-index: 4 !important; /* Highest z-index for the corner */
+    /* Background already set by .permissions-matrix-table th */
+}
+
+
+.permissions-matrix-table tbody tr:nth-child(even) td { /* Apply to td for sticky column */
+  background-color: var(--surface-color);
+}
+/* Ensure sticky first cell in even rows matches row background */
+.permissions-matrix-table tbody tr:nth-child(even) td:first-child {
+  background-color: var(--surface-color);
+}
+/* Ensure sticky first cell in odd rows matches default cell background */
+.permissions-matrix-table tbody tr:nth-child(odd) td:first-child {
+  background-color: var(--card-background);
+}
+
+
+.permissions-matrix-table tbody tr:hover td { /* Apply to all tds in hovered row */
+  background-color: #e0e7ef; /* A slightly different hover, less intense */
+}
+/* Ensure sticky first cell in hovered row matches hover background */
+.permissions-matrix-table tbody tr:hover td:first-child {
+  background-color: #e0e7ef;
+}
+
+
+.permission-check {
+  color: var(--accent-color);
+  font-weight: bold;
+  text-align: center;
+  display: block;
+  font-size: 1.2em; /* Make checkmark slightly larger */
+}
+.permission-no { /* For empty cells, if specific styling is desired */
+    display: block;
+    text-align: center;
+    color: #cccccc; /* e.g., a light grey dash or x */
+    font-size: 1.2em;
+}
+/* End of Styles for Permissions Matrix Table */
 </style>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
@@ -1267,5 +1431,6 @@ function filterPermissions(input) {
 "@
 
 # Combine HTML content and save to file
-$htmlComplete = $htmlHeader + ($htmlRolesWithScopeTags -join " ") + $htmlFooter
+$permissionsMatrixHtml = Generate-PermissionsMatrixHtml
+$htmlComplete = $htmlHeader + ($htmlRolesWithScopeTags -join " ") + $permissionsMatrixHtml + $htmlFooter
 $htmlComplete | Out-File "rbachealthcheck.html"
