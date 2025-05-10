@@ -4,7 +4,6 @@ A comprehensive PowerShell-based tool for managing and auditing Role-Based Acces
 
 ![grafik](https://github.com/user-attachments/assets/556309aa-9aec-4982-aca2-b5515e08cd39)
 
-
 ## Features
 
 - **RBAC Health Check**: Generates an interactive HTML report analyzing your Intune RBAC configuration, including:
@@ -25,6 +24,24 @@ A comprehensive PowerShell-based tool for managing and auditing Role-Based Acces
   - `DeviceManagementConfiguration.Read.All`: Allows reading of device configuration and policy settings (used for analyzing scope tags on policies).
   - `User.ReadBasic.All`: Allows reading basic user profiles (needed to get member details for assigned groups).
 
+## Installation
+
+### PowerShell Gallery (Recommended)
+
+The script is available on the [PowerShell Gallery](https://www.powershellgallery.com/packages/IntuneRBAC/). You can install it directly using:
+
+```powershell
+Install-Script -Name IntuneRBAC
+```
+
+### Manual Installation
+
+Alternatively, you can clone this repository or download the script files directly:
+
+```powershell
+git clone https://github.com/ugurkocde/IntuneRBAC.git
+```
+
 ## Usage
 
 ### Main Health Check Script
@@ -32,7 +49,11 @@ A comprehensive PowerShell-based tool for managing and auditing Role-Based Acces
 Run the main RBAC health check script to get a comprehensive overview of your Intune RBAC configuration:
 
 ```powershell
-.\RBAC_HealthCheck.ps1
+# If installed from PowerShell Gallery
+IntuneRBAC
+
+# If using local script
+.\IntuneRBAC.ps1
 ```
 
 ### Additional Scripts

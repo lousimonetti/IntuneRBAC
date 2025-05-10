@@ -1,11 +1,60 @@
+<#PSScriptInfo
+.VERSION 0.3.0
+.GUID 552abbe1-5543-41a3-bd39-eab7613593f2
+.AUTHOR ugurk
+.COMPANYNAME
+.COPYRIGHT Copyright (c) 2025 Ugur Koc | Microsoft MVP
+.TAGS Intune RBAC RoleBasedAccessControl ScopeTags Permissions
+.LICENSEURI https://github.com/ugurkocde/IntuneRBAC/blob/main/LICENSE
+.PROJECTURI https://github.com/ugurkocde/IntuneRBAC
+.ICONURI
+.EXTERNALMODULEDEPENDENCIES Microsoft.Graph.Authentication
+.REQUIREDSCRIPTS
+.EXTERNALSCRIPTDEPENDENCIES
+.RELEASENOTES
+Version 0.3.0: Added welcome banner, progress messages, and option to open HTML report after generation.
+Version 0.2.3: Current version with RBAC health check functionality.
+Version 0.2.2: Added interactive Role Relationship Diagram.
+Version 0.2.1: Added comprehensive Permissions Matrix.
+Version 0.2.0: Added security analysis for unused roles and overlapping permissions.
+Version 0.1.0: Initial release with basic RBAC reporting capabilities.
+.PRIVATEDATA
+#>
+
+<#
+.DESCRIPTION
+This script provides a comprehensive analysis of Microsoft Intune's Role-Based Access Control (RBAC) configuration. It generates an interactive HTML report that includes role details, assignments, scope tags, permissions, and security analysis to help administrators audit and manage their Intune RBAC setup.
+#>
+
+#Requires -Version 7.0
+
+# Display welcome banner
+Write-Host "
+___       _                    ____  ____    _    ____
+|_ _|_ __ | |_ _   _ _ __   ___|  _ \| __ )  / \  / ___|
+ | || '_ \| __| | | | '_ \ / _ \ |_) |  _ \ / _ \| |
+ | || | | | |_| |_| | | | |  __/  _ <| |_) / ___ \ |___
+|___|_| |_|\__|\__,_|_| |_|\___|_| \_\____/_/   \_\____|
+" -ForegroundColor Cyan
+
+Write-Host "IntuneRBAC - Comprehensive RBAC Analysis for Microsoft Intune" -ForegroundColor Green
+Write-Host "Made by Ugur Koc with" -NoNewline; Write-Host " ❤️  and ☕" -NoNewline
+Write-Host " | Version" -NoNewline; Write-Host " 0.3.0" -ForegroundColor Yellow -NoNewline
+Write-Host " | Last updated: " -NoNewline; Write-Host "$(Get-Date -Format "yyyy-MM-dd")" -ForegroundColor Magenta
+Write-Host ""
+Write-Host "GitHub: https://github.com/ugurkocde/IntuneRBAC" -ForegroundColor Cyan
+Write-Host "You can sponsor the development of this project at https://github.com/sponsors/ugurkocde" -ForegroundColor Red
+Write-Host ""
+
 # Step 1: Connect to Microsoft Graph
+Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
 Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Read.All, DeviceManagementConfiguration.Read.All, User.ReadBasic.All" -NoWelcome
+Write-Host "Connected to Microsoft Graph successfully!" -ForegroundColor Green
 
 # Get tenant information and timestamp
 $tenantInfo = Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/v1.0/organization" -Method GET
 $tenantName = $tenantInfo.value[0].displayName
 $lastUpdated = Get-Date -Format "MMMM dd, yyyy HH:mm"
-$version = "0.2.3"
 
 # Data processing for charts
 $rolesWithScopeTagsCount = 0
@@ -547,18 +596,25 @@ function Generate-PermissionsMatrixHtml {
 }
 
 # Fetch Scope Tags
+Write-Host "Fetching scope tags..." -ForegroundColor Yellow
 $scopeTagsUri = "https://graph.microsoft.com/beta/deviceManagement/roleScopeTags"
 $scopeTags = Get-ScopeTags -Uri $scopeTagsUri
+Write-Host "Retrieved $($scopeTags.Count) scope tags" -ForegroundColor Green
 
 # Fetch Roles with Scope Tags
+Write-Host "Fetching RBAC roles and analyzing permissions..." -ForegroundColor Yellow
 $rolesUri = "https://graph.microsoft.com/beta/deviceManagement/roleDefinitions"
 $htmlRolesWithScopeTags = Get-RolesWithScopeTags -Uri $rolesUri -ScopeTags $scopeTags
+Write-Host "Completed RBAC role analysis" -ForegroundColor Green
 
 # Calculate total number of roles
 $totalRolesCount = $rolesWithScopeTagsCount + $rolesWithoutScopeTagsCount
 
 # Get the number of scope tags
 $scopeTagsCount = $scopeTags.Count
+
+Write-Host "Found $totalRolesCount total roles ($customRolesCount custom, $builtInRolesCount built-in)" -ForegroundColor Cyan
+Write-Host "Identified $unusedRolesCount unused roles and $rolesWithOverlappingPermissionsCount roles with overlapping permissions" -ForegroundColor Cyan
 
 # Create HTML file content
 $navigationButtons = @"
@@ -1711,7 +1767,34 @@ function Generate-RoleRelationshipDiagramHtml {
 }
 
 # Combine HTML content and save to file
+Write-Host "Generating permissions matrix..." -ForegroundColor Yellow
 $permissionsMatrixHtml = Generate-PermissionsMatrixHtml
+Write-Host "Permissions matrix generated successfully" -ForegroundColor Green
+
+Write-Host "Creating interactive role relationship diagram..." -ForegroundColor Yellow
 $roleRelationshipDiagramHtml = Generate-RoleRelationshipDiagramHtml -Nodes $script:graphNodes -Links $script:graphLinks
+Write-Host "Role relationship diagram created successfully" -ForegroundColor Green
+
+Write-Host "Assembling final HTML report..." -ForegroundColor Yellow
 $htmlComplete = $htmlHeader + $htmlRolesOverviewHeader + ($htmlRolesWithScopeTags -join " ") + $permissionsMatrixHtml + $roleRelationshipDiagramHtml + $htmlFooter
-$htmlComplete | Out-File "rbachealthcheck.html"
+
+# Save the HTML file with full path
+$reportFileName = "rbachealthcheck.html"
+$reportFilePath = Join-Path -Path (Get-Location).Path -ChildPath $reportFileName
+$htmlComplete | Out-File $reportFilePath
+
+Write-Host "HTML report saved to '$reportFilePath'" -ForegroundColor Green
+Write-Host "RBAC Health Check completed successfully!" -ForegroundColor Cyan
+
+# Offer to open the HTML report
+$openReport = Read-Host "Would you like to open the HTML report now? (Y/N)"
+if ($openReport -eq "Y" -or $openReport -eq "y") {
+  Write-Host "Opening HTML report..." -ForegroundColor Yellow
+  try {
+    Invoke-Item $reportFilePath
+    Write-Host "Report opened successfully" -ForegroundColor Green
+  }
+  catch {
+    Write-Host "Could not open the report automatically. Please open it manually from: $reportFilePath" -ForegroundColor Red
+  }
+}
