@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.3.0
+.VERSION 0.3.1
 .GUID 552abbe1-5543-41a3-bd39-eab7613593f2
 .AUTHOR ugurk
 .COMPANYNAME
@@ -12,6 +12,7 @@
 .REQUIREDSCRIPTS
 .EXTERNALSCRIPTDEPENDENCIES
 .RELEASENOTES
+Version 0.3.1: Fixed a issue with the version number in the HTML report.
 Version 0.3.0: Added welcome banner, progress messages, and option to open HTML report after generation.
 Version 0.2.3: Current version with RBAC health check functionality.
 Version 0.2.2: Added interactive Role Relationship Diagram.
@@ -28,6 +29,8 @@ This script provides a comprehensive analysis of Microsoft Intune's Role-Based A
 
 #Requires -Version 7.0
 
+$version = "0.3.1"
+
 # Display welcome banner
 Write-Host "
 ___       _                    ____  ____    _    ____
@@ -39,7 +42,7 @@ ___       _                    ____  ____    _    ____
 
 Write-Host "IntuneRBAC - Comprehensive RBAC Analysis for Microsoft Intune" -ForegroundColor Green
 Write-Host "Made by Ugur Koc with" -NoNewline; Write-Host " ❤️  and ☕" -NoNewline
-Write-Host " | Version" -NoNewline; Write-Host " 0.3.0" -ForegroundColor Yellow -NoNewline
+Write-Host " | Version" -NoNewline; Write-Host " $version" -ForegroundColor Yellow -NoNewline
 Write-Host " | Last updated: " -NoNewline; Write-Host "$(Get-Date -Format "yyyy-MM-dd")" -ForegroundColor Magenta
 Write-Host ""
 Write-Host "GitHub: https://github.com/ugurkocde/IntuneRBAC" -ForegroundColor Cyan
