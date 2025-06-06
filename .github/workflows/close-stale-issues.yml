@@ -1,0 +1,53 @@
+name: Close Stale Issues
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Run daily at 9 AM UTC
+  workflow_dispatch:  # Allow manual triggering for testing
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Issue handling
+          stale-issue-message: |
+            @${{ github.event.issue.user.login }} This issue has been automatically marked as stale because it has not had any activity for 7 days. 
+            
+            It will be closed in 3 days if no further activity occurs. If this issue is still relevant, please provide the requested information or add a comment.
+            
+            Thank you for your contribution! 🙏
+          
+          close-issue-message: |
+            This issue has been automatically closed due to inactivity. 
+            
+            If you believe this issue is still relevant, please feel free to reopen it and provide the requested information. We're happy to help!
+          
+          # Timing configuration
+          days-before-issue-stale: 7
+          days-before-issue-close: 3
+          
+          # PR handling (disabled)
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          
+          # Labels
+          stale-issue-label: 'stale'
+          exempt-issue-labels: 'bug,enhancement,security,pinned,help wanted,good first issue'
+          
+          # Behavior
+          remove-stale-when-updated: true
+          delete-branch: false
+          
+          # Performance
+          operations-per-run: 30
+          
+          # Optional: Only process issues with specific labels
+          # only-issue-labels: 'awaiting-response,needs-info'
