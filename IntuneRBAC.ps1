@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.3.1
+.VERSION 0.3.2
 .GUID 552abbe1-5543-41a3-bd39-eab7613593f2
 .AUTHOR ugurk
 .COMPANYNAME
@@ -12,6 +12,7 @@
 .REQUIREDSCRIPTS
 .EXTERNALSCRIPTDEPENDENCIES
 .RELEASENOTES
+Version 0.3.2: Fixed infinite loop issue when groups are deleted or inaccessible. Added proper error handling for 404 errors.
 Version 0.3.1: Fixed a issue with the version number in the HTML report.
 Version 0.3.0: Added welcome banner, progress messages, and option to open HTML report after generation.
 Version 0.2.3: Current version with RBAC health check functionality.
@@ -29,7 +30,7 @@ This script provides a comprehensive analysis of Microsoft Intune's Role-Based A
 
 #Requires -Version 7.0
 
-$version = "0.3.1"
+$version = "0.3.2"
 
 # Display welcome banner
 Write-Host "
@@ -118,16 +119,33 @@ function Get-RoleMembers {
   param($roleDefinitionId)
   $membersUri = "https://graph.microsoft.com/beta/deviceManagement/roleAssignments('$roleDefinitionId')`?$expand=microsoft.graph.deviceAndAppManagementRoleAssignment/roleScopeTags"
 
-  $response = Invoke-MgGraphRequest -Uri $membersUri -Method GET
+  try {
+    $response = Invoke-MgGraphRequest -Uri $membersUri -Method GET
+  }
+  catch {
+    Write-Warning "Could not fetch role assignment: $($_.Exception.Message)"
+    return @()
+  }
 
   $members = @()
   foreach ($member in $response) {
     $groupId = $member.members -join ", " # Assuming there's only one group per member
 
+    # Skip if no group ID
+    if ([string]::IsNullOrEmpty($groupId)) {
+      continue
+    }
+
     # Fetch the group name
     $groupUri = "https://graph.microsoft.com/beta/groups/$groupId"
-    $groupResponse = Invoke-MgGraphRequest -Uri $groupUri -Method GET
-    $groupName = $groupResponse.displayName
+    try {
+      $groupResponse = Invoke-MgGraphRequest -Uri $groupUri -Method GET
+      $groupName = $groupResponse.displayName
+    }
+    catch {
+      Write-Warning "Group $groupId not found or inaccessible. Skipping."
+      continue
+    }
 
     $members += [PSCustomObject]@{
       RoleAssignmentName = $member.displayName
@@ -143,8 +161,19 @@ function Get-RoleMembers {
 function Get-GroupMembers {
   param($groupId)
 
+  # Skip if no group ID provided
+  if ([string]::IsNullOrEmpty($groupId)) {
+    return @()
+  }
+
   $groupMembersUri = "https://graph.microsoft.com/beta/groups/$groupId/members"
-  $response = Invoke-MgGraphRequest -Uri $groupMembersUri -Method GET
+  try {
+    $response = Invoke-MgGraphRequest -Uri $groupMembersUri -Method GET
+  }
+  catch {
+    Write-Warning "Could not fetch members for group ${groupId}: $($_.Exception.Message)"
+    return @()
+  }
 
   $userIds = @()
   foreach ($member in $response.value) {
@@ -161,9 +190,14 @@ function Get-GroupMembers {
   $upns = @()
   foreach ($userId in $userIds) {
     $userUri = "https://graph.microsoft.com/beta/users/$userId"
-    $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
-    if ($userResponse.userPrincipalName) {
-      $upns += $userResponse.userPrincipalName
+    try {
+      $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
+      if ($userResponse.userPrincipalName) {
+        $upns += $userResponse.userPrincipalName
+      }
+    }
+    catch {
+      Write-Warning "Could not fetch user details for ${userId}: $($_.Exception.Message)"
     }
   }
 
@@ -387,7 +421,12 @@ function Get-RolesWithScopeTags {
 
           $htmlContent += "<p><strong>Assignment:</strong> $($member.RoleAssignmentName)</p>"
           $htmlContent += "<p><strong>Group:</strong> $($member.GroupName)</p>"
-          $htmlContent += "<p><strong>Members:</strong> $upns</p>"
+          if ($upns) {
+            $htmlContent += "<p><strong>Members:</strong> $upns</p>"
+          }
+          else {
+            $htmlContent += "<p><strong>Members:</strong> <em>No accessible members</em></p>"
+          }
         }
       }
       $htmlContent += "</div>"
