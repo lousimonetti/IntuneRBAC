@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.3.3
+.VERSION 0.4.0
 .GUID 552abbe1-5543-41a3-bd39-eab7613593f2
 .AUTHOR ugurk
 .COMPANYNAME
@@ -12,6 +12,14 @@
 .REQUIREDSCRIPTS
 .EXTERNALSCRIPTDEPENDENCIES
 .RELEASENOTES
+Version 0.4.0: Major update with performance improvements and new features:
+- Added Dark Mode toggle with persistent preference storage
+- Added Export to CSV functionality for roles, permissions matrix, and security analysis
+- Added Global Search feature with highlighting and auto-expand for matching results
+- Implemented parallel processing for faster group member lookups
+- Added progress tracking with ETA calculations
+- Optimized HTML generation using StringBuilder for better performance
+- Added batch API request capability for improved efficiency
 Version 0.3.3: Added missing Group.Read.All permission to fix 404 errors when accessing group information.
 Version 0.3.2: Fixed infinite loop issue when groups are deleted or inaccessible. Added proper error handling for 404 errors.
 Version 0.3.1: Fixed a issue with the version number in the HTML report.
@@ -31,7 +39,7 @@ This script provides a comprehensive analysis of Microsoft Intune's Role-Based A
 
 #Requires -Version 7.0
 
-$version = "0.3.3"
+$version = "0.4.0"
 
 # Display welcome banner
 Write-Host "
@@ -188,17 +196,36 @@ function Get-GroupMembers {
     $userIds += Get-GroupMembers -groupId $groupId
   }
 
-  $upns = @()
-  foreach ($userId in $userIds) {
-    $userUri = "https://graph.microsoft.com/beta/users/$userId"
-    try {
-      $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
-      if ($userResponse.userPrincipalName) {
-        $upns += $userResponse.userPrincipalName
+  # Use parallel processing for user lookups if there are many users
+  if ($userIds.Count -gt 10) {
+    $upns = $userIds | ForEach-Object -Parallel {
+      $userId = $_
+      $userUri = "https://graph.microsoft.com/beta/users/$userId"
+      try {
+        $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
+        if ($userResponse.userPrincipalName) {
+          $userResponse.userPrincipalName
+        }
       }
-    }
-    catch {
-      Write-Warning "Could not fetch user details for ${userId}: $($_.Exception.Message)"
+      catch {
+        Write-Warning "Could not fetch user details for ${userId}: $($_.Exception.Message)"
+      }
+    } -ThrottleLimit 5
+  }
+  else {
+    # Sequential processing for small groups
+    $upns = @()
+    foreach ($userId in $userIds) {
+      $userUri = "https://graph.microsoft.com/beta/users/$userId"
+      try {
+        $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
+        if ($userResponse.userPrincipalName) {
+          $upns += $userResponse.userPrincipalName
+        }
+      }
+      catch {
+        Write-Warning "Could not fetch user details for ${userId}: $($_.Exception.Message)"
+      }
     }
   }
 
@@ -319,7 +346,8 @@ function Get-RolesWithScopeTags {
   # Get overlapping permissions
   $overlappingPermissions = Get-OverlappingPermissions -allRoles $allRoles
 
-  $htmlContent = @()
+  # Use StringBuilder for better performance
+  $htmlBuilder = [System.Text.StringBuilder]::new()
 
   foreach ($role in $allRoles) {
     $allowedActions = @()
@@ -394,64 +422,64 @@ function Get-RolesWithScopeTags {
     $securityBadges += "</div>"
 
     # Start the accordion for each role
-    $htmlContent += "<button class='accordion'><div class='accordion-header'><span class='accordion-title'>$($role.displayName)</span>$securityBadges</div></button>"
-    $htmlContent += "<div class='panel'>"
-    $htmlContent += "<div class='panel-content'>"
+    [void]$htmlBuilder.Append("<button class='accordion'><div class='accordion-header'><span class='accordion-title'>$($role.displayName)</span>$securityBadges</div></button>")
+    [void]$htmlBuilder.Append("<div class='panel'>")
+    [void]$htmlBuilder.Append("<div class='panel-content'>")
 
     # Top Panel with Basic Info and Role Assignments side by side
-    $htmlContent += "<div class='panel-top'>"
+    [void]$htmlBuilder.Append("<div class='panel-top'>")
         
     # Basic Info Section
-    $htmlContent += "<div class='panel-top-section'>"
-    $htmlContent += "<h3><i class='fas fa-info-circle'></i>Basic Information</h3>"
-    $htmlContent += "<p><strong>Description:</strong> $($role.description)</p>"
-    $htmlContent += "<p><strong>Type:</strong> $roleType</p>"
-    $htmlContent += $scopeTagInfo
-    $htmlContent += "</div>"
+    [void]$htmlBuilder.Append("<div class='panel-top-section'>")
+    [void]$htmlBuilder.Append("<h3><i class='fas fa-info-circle'></i>Basic Information</h3>")
+    [void]$htmlBuilder.Append("<p><strong>Description:</strong> $($role.description)</p>")
+    [void]$htmlBuilder.Append("<p><strong>Type:</strong> $roleType</p>")
+    [void]$htmlBuilder.Append($scopeTagInfo)
+    [void]$htmlBuilder.Append("</div>")
 
     # Role Assignment Section (if exists)
     $roleAssignments = Get-RoleAssignments -roleId $role.id
     if ($roleAssignments) {
-      $htmlContent += "<div class='panel-top-section'>"
-      $htmlContent += "<h3><i class='fas fa-users'></i>Role Assignments</h3>"
+      [void]$htmlBuilder.Append("<div class='panel-top-section'>")
+      [void]$htmlBuilder.Append("<h3><i class='fas fa-users'></i>Role Assignments</h3>")
       foreach ($assignment in $roleAssignments) {
         $roleMembers = Get-RoleMembers -roleDefinitionId $assignment.RoleDefinitionId
         foreach ($member in $roleMembers) {
           $groupMembers = Get-GroupMembers -groupId $member.GroupId
           $upns = $groupMembers -join ", "
 
-          $htmlContent += "<p><strong>Assignment:</strong> $($member.RoleAssignmentName)</p>"
-          $htmlContent += "<p><strong>Group:</strong> $($member.GroupName)</p>"
+          [void]$htmlBuilder.Append("<p><strong>Assignment:</strong> $($member.RoleAssignmentName)</p>")
+          [void]$htmlBuilder.Append("<p><strong>Group:</strong> $($member.GroupName)</p>")
           if ($upns) {
-            $htmlContent += "<p><strong>Members:</strong> $upns</p>"
+            [void]$htmlBuilder.Append("<p><strong>Members:</strong> $upns</p>")
           }
           else {
-            $htmlContent += "<p><strong>Members:</strong> <em>No accessible members</em></p>"
+            [void]$htmlBuilder.Append("<p><strong>Members:</strong> <em>No accessible members</em></p>")
           }
         }
       }
-      $htmlContent += "</div>"
+      [void]$htmlBuilder.Append("</div>")
     }
     else {
-      $htmlContent += "<div class='panel-top-section warning-section'>"
-      $htmlContent += "<h3><i class='fas fa-exclamation-triangle'></i>Unused Role</h3>"
-      $htmlContent += "<p>This role is not assigned to any groups or users.</p>"
-      $htmlContent += "<p>Consider removing this role if it's not needed or assign it to appropriate groups.</p>"
-      $htmlContent += "</div>"
+      [void]$htmlBuilder.Append("<div class='panel-top-section warning-section'>")
+      [void]$htmlBuilder.Append("<h3><i class='fas fa-exclamation-triangle'></i>Unused Role</h3>")
+      [void]$htmlBuilder.Append("<p>This role is not assigned to any groups or users.</p>")
+      [void]$htmlBuilder.Append("<p>Consider removing this role if it's not needed or assign it to appropriate groups.</p>")
+      [void]$htmlBuilder.Append("</div>")
     }
-    $htmlContent += "</div>" # Close panel-top
+    [void]$htmlBuilder.Append("</div>") # Close panel-top
     
     # Security Analysis Section (Only show if overlaps exist)
     if ($hasOverlappingPermissions) {
-      $htmlContent += "<div class='security-analysis'>"
-      $htmlContent += "<h3><i class='fas fa-shield-alt'></i>Security Analysis</h3>"
+      [void]$htmlBuilder.Append("<div class='security-analysis'>")
+      [void]$htmlBuilder.Append("<h3><i class='fas fa-shield-alt'></i>Security Analysis</h3>")
             
       # Overlapping Permissions
       if ($hasOverlappingPermissions) {
-        $htmlContent += "<div class='security-section info-section'>"
-        $htmlContent += "<h4><i class='fas fa-info-circle'></i>Overlapping Permissions</h4>"
-        $htmlContent += "<p>This role has significant permission overlap with the following roles:</p>"
-        $htmlContent += "<ul class='overlap-list'>"
+        [void]$htmlBuilder.Append("<div class='security-section info-section'>")
+        [void]$htmlBuilder.Append("<h4><i class='fas fa-info-circle'></i>Overlapping Permissions</h4>")
+        [void]$htmlBuilder.Append("<p>This role has significant permission overlap with the following roles:</p>")
+        [void]$htmlBuilder.Append("<ul class='overlap-list'>")
         
         # Get top 3 overlapping roles by percentage
         $topOverlaps = $overlappingPermissions[$role.id].GetEnumerator() |
@@ -459,65 +487,65 @@ function Get-RolesWithScopeTags {
         Select-Object -First 3
         
         foreach ($overlap in $topOverlaps) {
-          $htmlContent += "<li><strong>$($overlap.Value.RoleName):</strong> $($overlap.Value.OverlapPercentage)% overlap ($($overlap.Value.CommonPermissions.Count) permissions)</li>"
+          [void]$htmlBuilder.Append("<li><strong>$($overlap.Value.RoleName):</strong> $($overlap.Value.OverlapPercentage)% overlap ($($overlap.Value.CommonPermissions.Count) permissions)</li>")
         }
         
-        $htmlContent += "</ul>"
-        $htmlContent += "</div>"
+        [void]$htmlBuilder.Append("</ul>")
+        [void]$htmlBuilder.Append("</div>")
       }
       
-      $htmlContent += "</div>" # Close security-analysis
+      [void]$htmlBuilder.Append("</div>") # Close security-analysis
     }
 
     # Bottom Panel (Resource Actions)
-    $htmlContent += "<div class='panel-bottom'>"
+    [void]$htmlBuilder.Append("<div class='panel-bottom'>")
     if ($allowedActions) {
       $categories = Get-CategorizedPermissions -actions $allowedActions
       $totalPermissions = ($allowedActions | Measure-Object).Count
       $categoryCount = ($categories.Keys | Where-Object { $categories[$_].Count -gt 0 } | Measure-Object).Count
 
-      $htmlContent += "<div class='resource-actions'>"
-      $htmlContent += "<div class='resource-actions-header'>"
-      $htmlContent += "<div class='resource-actions-title'>"
-      $htmlContent += "<h3><i class='fas fa-shield-alt'></i>Allowed Resource Actions</h3>"
-      $htmlContent += "<span class='resource-actions-count'>This role has $totalPermissions permissions across $categoryCount categories</span>"
-      $htmlContent += "</div>"
-      $htmlContent += "<input type='text' class='permission-search' placeholder='Search permissions...' onkeyup='filterPermissions(this)'>"
-      $htmlContent += "</div>"
+      [void]$htmlBuilder.Append("<div class='resource-actions'>")
+      [void]$htmlBuilder.Append("<div class='resource-actions-header'>")
+      [void]$htmlBuilder.Append("<div class='resource-actions-title'>")
+      [void]$htmlBuilder.Append("<h3><i class='fas fa-shield-alt'></i>Allowed Resource Actions</h3>")
+      [void]$htmlBuilder.Append("<span class='resource-actions-count'>This role has $totalPermissions permissions across $categoryCount categories</span>")
+      [void]$htmlBuilder.Append("</div>")
+      [void]$htmlBuilder.Append("<input type='text' class='permission-search' placeholder='Search permissions...' onkeyup='filterPermissions(this)'>")
+      [void]$htmlBuilder.Append("</div>")
 
       # Tabs
-      $htmlContent += "<div class='permission-tabs'>"
-      $htmlContent += "<button class='permission-tab active' onclick='showCategory(this, `"all`")'>All Permissions</button>"
+      [void]$htmlBuilder.Append("<div class='permission-tabs'>")
+      [void]$htmlBuilder.Append("<button class='permission-tab active' onclick='showCategory(this, `"all`")'>All Permissions</button>")
       foreach ($category in $categories.Keys | Where-Object { $categories[$_].Count -gt 0 }) {
-        $htmlContent += "<button class='permission-tab' onclick='showCategory(this, `"$category`")'>$category</button>"
+        [void]$htmlBuilder.Append("<button class='permission-tab' onclick='showCategory(this, `"$category`")'>$category</button>")
       }
-      $htmlContent += "</div>"
+      [void]$htmlBuilder.Append("</div>")
 
       # Categories
       foreach ($category in $categories.Keys) {
         if ($categories[$category].Count -gt 0) {
-          $htmlContent += "<div class='permission-category' data-category='$category'>"
-          $htmlContent += "<div class='category-header'>"
-          $htmlContent += "<span class='category-title'>$category</span>"
-          $htmlContent += "<span class='category-count'>$($categories[$category].Count)</span>"
-          $htmlContent += "</div>"
-          $htmlContent += "<div class='permission-list'>"
+          [void]$htmlBuilder.Append("<div class='permission-category' data-category='$category'>")
+          [void]$htmlBuilder.Append("<div class='category-header'>")
+          [void]$htmlBuilder.Append("<span class='category-title'>$category</span>")
+          [void]$htmlBuilder.Append("<span class='category-count'>$($categories[$category].Count)</span>")
+          [void]$htmlBuilder.Append("</div>")
+          [void]$htmlBuilder.Append("<div class='permission-list'>")
           foreach ($permission in $categories[$category]) {
-            $htmlContent += "<div class='permission-item'>"
-            $htmlContent += "<span class='permission-icon'></span>"
-            $htmlContent += "<span class='permission-name'>$permission</span>"
-            $htmlContent += "</div>"
+            [void]$htmlBuilder.Append("<div class='permission-item'>")
+            [void]$htmlBuilder.Append("<span class='permission-icon'></span>")
+            [void]$htmlBuilder.Append("<span class='permission-name'>$permission</span>")
+            [void]$htmlBuilder.Append("</div>")
           }
-          $htmlContent += "</div>"
-          $htmlContent += "</div>"
+          [void]$htmlBuilder.Append("</div>")
+          [void]$htmlBuilder.Append("</div>")
         }
       }
-      $htmlContent += "</div>" # Close resource-actions
+      [void]$htmlBuilder.Append("</div>") # Close resource-actions
     }
-    $htmlContent += "</div>" # Close panel-bottom
+    [void]$htmlBuilder.Append("</div>") # Close panel-bottom
 
-    $htmlContent += "</div>" # Close panel-content
-    $htmlContent += "</div>" # Close panel
+    [void]$htmlBuilder.Append("</div>") # Close panel-content
+    [void]$htmlBuilder.Append("</div>") # Close panel
 
     # ---- START: Populate data for Interactive Role Relationship Diagram ----
     try {
@@ -604,38 +632,49 @@ function Get-RolesWithScopeTags {
   }
   $script:allRoleNamesForMatrixData.Sort() # Sort roles once after all are collected and matrix is finalized
 
-  return $htmlContent
+  return $htmlBuilder.ToString()
 }
 
 function Generate-PermissionsMatrixHtml {
-  $matrixHtml = @()
-  $matrixHtml += "<h2 id='permissions-matrix-section'><i class='fas fa-table'></i> Permissions Matrix</h2>"
-  $matrixHtml += "<div class='permissions-matrix-container'>" # ID moved to H2 for direct navigation
-  $matrixHtml += "<table class='permissions-matrix-table'>"
-  $matrixHtml += "<thead><tr><th>Permission</th>"
+  Write-Host "Building permissions matrix table..." -ForegroundColor Yellow
+  
+  # Use StringBuilder for better performance
+  $matrixBuilder = [System.Text.StringBuilder]::new()
+  
+  [void]$matrixBuilder.Append("<div style='display: flex; justify-content: space-between; align-items: center; margin-top: 40px; margin-bottom: 20px;'>")
+  [void]$matrixBuilder.Append("<h2 id='permissions-matrix-section' style='margin: 0;'><i class='fas fa-table'></i> Permissions Matrix</h2>")
+  [void]$matrixBuilder.Append("<button class='hero-button' onclick='exportPermissionsMatrix()' style='background-color: var(--accent-color); margin: 0;'>")
+  [void]$matrixBuilder.Append("<i class='fas fa-file-csv'></i> Export Matrix to CSV")
+  [void]$matrixBuilder.Append("</button>")
+  [void]$matrixBuilder.Append("</div>")
+  [void]$matrixBuilder.Append("<div class='permissions-matrix-container'>")
+  [void]$matrixBuilder.Append("<table class='permissions-matrix-table'>")
+  [void]$matrixBuilder.Append("<thead><tr><th>Permission</th>")
 
   # Role names are already sorted in $script:allRoleNamesForMatrixData by Get-RolesWithScopeTags
   foreach ($roleName in $script:allRoleNamesForMatrixData) {
-    $matrixHtml += "<th>$($roleName)</th>"
+    [void]$matrixBuilder.Append("<th>$($roleName)</th>")
   }
-  $matrixHtml += "</tr></thead>"
-  $matrixHtml += "<tbody>"
+  [void]$matrixBuilder.Append("</tr></thead>")
+  [void]$matrixBuilder.Append("<tbody>")
 
   # Sort permission names for row display
   $sortedPermissionNames = $script:allPermissionsMatrixData.Keys | Sort-Object
 
   foreach ($permissionName in $sortedPermissionNames) {
-    $matrixHtml += "<tr><td>$($permissionName)</td>" # Permission names are already cleaned
+    [void]$matrixBuilder.Append("<tr><td>$($permissionName)</td>")
     foreach ($roleName in $script:allRoleNamesForMatrixData) {
       # Use the sorted list for column order
       $hasPermission = $script:allPermissionsMatrixData[$permissionName].ContainsKey($roleName) -and $script:allPermissionsMatrixData[$permissionName][$roleName]
       $cellContent = if ($hasPermission) { "<span class='permission-check'>✔️</span>" } else { "<span class='permission-no'></span>" }
-      $matrixHtml += "<td>$cellContent</td>"
+      [void]$matrixBuilder.Append("<td>$cellContent</td>")
     }
-    $matrixHtml += "</tr>"
+    [void]$matrixBuilder.Append("</tr>")
   }
-  $matrixHtml += "</tbody></table></div>"
-  return ($matrixHtml -join "`r`n")
+  [void]$matrixBuilder.Append("</tbody></table></div>")
+  
+  Write-Host "Permissions matrix table built successfully" -ForegroundColor Green
+  return $matrixBuilder.ToString()
 }
 
 # Fetch Scope Tags
@@ -702,6 +741,25 @@ $htmlHeader = @"
   --warning-rgb: 255, 159, 28; /* RGB for rgba */
   --info-color: #2196F3;
   --info-rgb: 33, 150, 243; /* RGB for rgba */
+}
+
+/* Dark mode variables */
+[data-theme="dark"] {
+  --primary-color: #E0E0E0;
+  --primary-light: #5CBA97;
+  --primary-dark: #FFFFFF;
+  --secondary-color: #00D9FF;
+  --secondary-dark: #00B2CA;
+  --accent-color: #5CBA97;
+  --accent-light: #7ACFB6;
+  --background-color: #1A1B2E;
+  --surface-color: #2D3047;
+  --text-color: #E0E0E0;
+  --card-background: #242538;
+  --border-color: #3A3C52;
+  --error-color: #FF6B94;
+  --warning-color: #FFB347;
+  --info-color: #5CACFF;
 }
 
 body {
@@ -829,6 +887,79 @@ body {
 
 .hero-button i {
   font-size: 16px;
+}
+
+/* Global Search Styles */
+.global-search-container {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  max-width: 600px;
+  margin: 20px auto;
+}
+
+.global-search-input {
+  width: 100%;
+  padding: 12px 20px;
+  padding-right: 50px;
+  font-size: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 30px;
+  background-color: rgba(255, 255, 255, 0.15);
+  color: white;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.global-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.global-search-input:focus {
+  outline: none;
+  background-color: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
+}
+
+.clear-search-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: white;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 18px;
+  transition: opacity 0.3s ease;
+}
+
+.clear-search-btn:hover {
+  opacity: 0.8;
+}
+
+.search-results-count {
+  text-align: center;
+  color: white;
+  margin-bottom: 15px;
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.search-highlight {
+  background-color: #FFD700;
+  color: #000;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-weight: bold;
+}
+
+[data-theme="dark"] .search-highlight {
+  background-color: #FFB347;
+  color: #1A1B2E;
 }
 
 .container {
@@ -1445,10 +1576,54 @@ h2 {
     font-size: 1.2em;
 }
 /* End of Styles for Permissions Matrix Table */
+
+/* Dark Mode Toggle Button */
+.dark-mode-toggle {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1000;
+  background-color: var(--surface-color);
+  color: var(--text-color);
+  border: 2px solid var(--border-color);
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+}
+
+.dark-mode-toggle:hover {
+  background-color: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+  transform: scale(1.1);
+}
+
+.dark-mode-toggle i {
+  font-size: 20px;
+}
+
+[data-theme="dark"] .dark-mode-toggle {
+  background-color: var(--surface-color);
+  border-color: var(--accent-color);
+}
+
+[data-theme="dark"] .dark-mode-toggle:hover {
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
+}
 </style>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
+<button class="dark-mode-toggle" onclick="toggleDarkMode()" title="Toggle Dark Mode">
+  <i class="fas fa-moon" id="darkModeIcon"></i>
+</button>
 <div class="hero">
   <div class="hero-content">
     <div class="hero-meta">
@@ -1470,6 +1645,13 @@ h2 {
         <h1>Intune RBAC Health Check</h1>
         <p class="hero-subtitle">Comprehensive overview of your Intune Role-Based Access Control configuration</p>
       </div>
+      <div class="global-search-container">
+        <input type="text" id="globalSearchInput" placeholder="Search roles and permissions..." class="global-search-input" onkeyup="performGlobalSearch()">
+        <button onclick="clearGlobalSearch()" class="clear-search-btn" id="clearSearchBtn" style="display:none;">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div id="searchResultsCount" class="search-results-count" style="display:none;"></div>
       <div class="hero-buttons">
         <a href="https://github.com/ugurkocde/IntuneRBAC" target="_blank" class="hero-button">
           <i class="fab fa-github"></i>
@@ -1506,8 +1688,13 @@ $navigationButtons
       </div>
     </div>
     
-    <h2 id='security-analysis-section'><i class='fas fa-shield-alt'></i>Security Analysis</h2>
-    <div class='stats-grid'>
+    <div style='display: flex; justify-content: space-between; align-items: center;'>
+      <h2 id='security-analysis-section' style='margin: 0;'><i class='fas fa-shield-alt'></i>Security Analysis</h2>
+      <button class='hero-button' onclick='exportSecurityAnalysis()' style='background-color: var(--accent-color); margin: 0;'>
+        <i class='fas fa-file-csv'></i> Export Security Analysis
+      </button>
+    </div>
+    <div class='stats-grid' style='margin-top: 20px;'>
       <div class='stat-card warning'>
         <div class='stat-card-icon'><i class='fas fa-ban'></i></div>
         <div class='stat-number'>$unusedRolesCount</div>
@@ -1524,11 +1711,16 @@ $navigationButtons
 
 $htmlRolesOverviewHeader = @"
 <div id='roles-overview-section'>
-  <h2><i class='fas fa-user-cog'></i> Roles Overview</h2>
+  <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;'>
+    <h2 style='margin: 0;'><i class='fas fa-user-cog'></i> Roles Overview</h2>
+    <button class='hero-button' onclick='exportRolesData()' style='background-color: var(--accent-color); margin: 0;'>
+      <i class='fas fa-file-csv'></i> Export Roles to CSV
+    </button>
+  </div>
 </div>
 "@
 
-$htmlFooter = @"
+$htmlFooter = @'
 </div>
 <footer class="footer">
     <div class="footer-content">
@@ -1536,7 +1728,35 @@ $htmlFooter = @"
     </div>
 </footer>
 <script>
+// Dark mode functionality
+function toggleDarkMode() {
+    const html = document.documentElement;
+    const currentTheme = html.getAttribute('data-theme');
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', newTheme);
+    localStorage.setItem('theme', newTheme);
+    updateDarkModeButton(newTheme);
+}
+
+function updateDarkModeButton(theme) {
+    const icon = document.getElementById('darkModeIcon');
+    const button = document.querySelector('.dark-mode-toggle');
+    if (theme === 'dark') {
+        icon.className = 'fas fa-sun';
+        button.title = 'Switch to Light Mode';
+    } else {
+        icon.className = 'fas fa-moon';
+        button.title = 'Switch to Dark Mode';
+    }
+}
+
+// Apply saved theme on load
 document.addEventListener('DOMContentLoaded', (event) => {
+    // Apply saved theme
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    updateDarkModeButton(savedTheme);
+
     // Accordion functionality
     var acc = document.getElementsByClassName("accordion");
     for (var i = 0; i < acc.length; i++) {
@@ -1552,8 +1772,11 @@ document.addEventListener('DOMContentLoaded', (event) => {
                 panel.querySelectorAll('.permission-category').forEach(cat => {
                     cat.style.display = 'block';
                 });
-                // Set active tab to "All Permissions"
-                panel.querySelector('.permission-tab').classList.add('active');
+                // Set active tab to "All Permissions" if it exists
+                var permTab = panel.querySelector('.permission-tab');
+                if (permTab) {
+                    permTab.classList.add('active');
+                }
                 // Set max height to allow scrolling
                 panel.style.maxHeight = panel.scrollHeight + "px";
             }
@@ -1588,10 +1811,380 @@ function filterPermissions(input) {
         item.style.display = text.includes(filter) ? '' : 'none';
     });
 }
+
+// CSV Export functionality
+function exportToCSV(data, filename) {
+    const csv = convertToCSV(data);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    if (link.download !== undefined) {
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+}
+
+function convertToCSV(data) {
+    if (!data || data.length === 0) return '';
+    
+    const headers = Object.keys(data[0]);
+    const csvHeaders = headers.join(',');
+    
+    const csvRows = data.map(row => {
+        return headers.map(header => {
+            const value = row[header] || '';
+            // Escape quotes and wrap in quotes if contains comma, newline, or quotes
+            const escaped = String(value).replace(/"/g, '""');
+            return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
+        }).join(',');
+    });
+    
+    return [csvHeaders, ...csvRows].join('\n');
+}
+
+function exportRolesData() {
+    const rolesData = [];
+    document.querySelectorAll('.accordion').forEach(accordion => {
+        const roleTitle = accordion.querySelector('.accordion-title').textContent;
+        const panel = accordion.nextElementSibling;
+        
+        // Extract basic info
+        const basicInfo = panel.querySelector('.panel-top-section');
+        let description = '';
+        let type = '';
+        let scopeTag = '';
+        
+        if (basicInfo) {
+            const paragraphs = basicInfo.querySelectorAll('p');
+            paragraphs.forEach(p => {
+                const text = p.textContent;
+                if (text.includes('Description:')) description = text.replace('Description:', '').trim();
+                if (text.includes('Type:')) type = text.replace('Type:', '').trim();
+            });
+            
+            const scopeTagEl = basicInfo.querySelector('.scope-tag, .no-scope-tag');
+            if (scopeTagEl) {
+                scopeTag = scopeTagEl.textContent.replace('Scope Tag:', '').replace('No Scope Tag assigned', 'None').trim();
+            }
+        }
+        
+        // Extract assignment info
+        let assignmentCount = 0;
+        let groupNames = [];
+        const assignmentSection = Array.from(panel.querySelectorAll('.panel-top-section')).find(section => 
+            section.querySelector('h3')?.textContent.includes('Role Assignments')
+        );
+        
+        if (assignmentSection) {
+            const groups = assignmentSection.querySelectorAll('p');
+            groups.forEach(p => {
+                if (p.textContent.includes('Group:')) {
+                    groupNames.push(p.textContent.replace('Group:', '').trim());
+                }
+            });
+            assignmentCount = groupNames.length;
+        }
+        
+        // Count permissions
+        const permissionItems = panel.querySelectorAll('.permission-item');
+        const permissionCount = permissionItems.length;
+        
+        // Check security badges
+        const isUnused = accordion.querySelector('.security-badge.warning')?.textContent.includes('Unused') || false;
+        const hasOverlapping = accordion.querySelector('.security-badge.info')?.textContent.includes('Overlapping') || false;
+        
+        rolesData.push({
+            'Role Name': roleTitle,
+            'Type': type,
+            'Description': description,
+            'Scope Tags': scopeTag,
+            'Assignment Count': assignmentCount,
+            'Groups': groupNames.join('; '),
+            'Permission Count': permissionCount,
+            'Is Unused': isUnused ? 'Yes' : 'No',
+            'Has Overlapping Permissions': hasOverlapping ? 'Yes' : 'No'
+        });
+    });
+    
+    exportToCSV(rolesData, 'intune_rbac_roles_export.csv');
+}
+
+function exportPermissionsMatrix() {
+    const matrixData = [];
+    const table = document.querySelector('.permissions-matrix-table');
+    if (!table) return;
+    
+    // Get headers (role names)
+    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent);
+    
+    // Get rows
+    table.querySelectorAll('tbody tr').forEach(row => {
+        const cells = row.querySelectorAll('td');
+        const rowData = {};
+        
+        cells.forEach((cell, index) => {
+            if (index === 0) {
+                rowData['Permission'] = cell.textContent;
+            } else {
+                const hasPermission = cell.querySelector('.permission-check') ? 'Yes' : 'No';
+                rowData[headers[index]] = hasPermission;
+            }
+        });
+        
+        matrixData.push(rowData);
+    });
+    
+    exportToCSV(matrixData, 'intune_rbac_permissions_matrix.csv');
+}
+
+function exportSecurityAnalysis() {
+    const securityData = [];
+    
+    // Get statistics from stat cards
+    const statCards = document.querySelectorAll('.stat-card');
+    let unusedRoles = 0;
+    let overlappingRoles = 0;
+    
+    statCards.forEach(card => {
+        const label = card.querySelector('.stat-label')?.textContent || '';
+        const value = card.querySelector('.stat-number')?.textContent || '0';
+        
+        if (label.includes('Unused Roles')) unusedRoles = parseInt(value);
+        if (label.includes('Overlapping Permissions')) overlappingRoles = parseInt(value);
+    });
+    
+    // Collect unused roles
+    document.querySelectorAll('.accordion').forEach(accordion => {
+        const roleTitle = accordion.querySelector('.accordion-title').textContent;
+        const isUnused = accordion.querySelector('.security-badge.warning')?.textContent.includes('Unused') || false;
+        const hasOverlapping = accordion.querySelector('.security-badge.info')?.textContent.includes('Overlapping') || false;
+        
+        if (isUnused || hasOverlapping) {
+            const panel = accordion.nextElementSibling;
+            let issues = [];
+            if (isUnused) issues.push('Unused Role');
+            if (hasOverlapping) issues.push('Overlapping Permissions');
+            
+            // Get overlap details if available
+            let overlapDetails = '';
+            const overlapSection = panel.querySelector('.overlap-list');
+            if (overlapSection) {
+                const overlaps = Array.from(overlapSection.querySelectorAll('li')).map(li => li.textContent);
+                overlapDetails = overlaps.join('; ');
+            }
+            
+            securityData.push({
+                'Role Name': roleTitle,
+                'Security Issues': issues.join(', '),
+                'Details': overlapDetails || 'No group assignments'
+            });
+        }
+    });
+    
+    exportToCSV(securityData, 'intune_rbac_security_analysis.csv');
+}
+
+// Global Search functionality
+let originalContent = {};
+let searchActive = false;
+
+function performGlobalSearch() {
+    const searchInput = document.getElementById('globalSearchInput');
+    const searchTerm = searchInput.value.toLowerCase().trim();
+    const clearBtn = document.getElementById('clearSearchBtn');
+    const resultsCount = document.getElementById('searchResultsCount');
+    
+    if (searchTerm.length === 0) {
+        clearGlobalSearch();
+        return;
+    }
+    
+    clearBtn.style.display = 'inline-block';
+    searchActive = true;
+    
+    let totalMatches = 0;
+    const accordions = document.querySelectorAll('.accordion');
+    
+    accordions.forEach((accordion, index) => {
+        const panel = accordion.nextElementSibling;
+        let matchFound = false;
+        
+        // Save original content if not already saved
+        if (!originalContent[index]) {
+            originalContent[index] = {
+                accordion: accordion.innerHTML,
+                panel: panel.innerHTML
+            };
+        }
+        
+        // Restore original content before applying new search
+        if (originalContent[index]) {
+            accordion.innerHTML = originalContent[index].accordion;
+            panel.innerHTML = originalContent[index].panel;
+            // Re-attach event listeners to restored content
+            reattachPermissionListeners(panel);
+        }
+        
+        // Search in role title
+        const roleTitle = accordion.querySelector('.accordion-title').textContent.toLowerCase();
+        if (roleTitle.includes(searchTerm)) {
+            matchFound = true;
+            // Highlight the match in role title
+            const titleElement = accordion.querySelector('.accordion-title');
+            titleElement.innerHTML = highlightText(titleElement.textContent, searchTerm);
+        }
+        
+        // Search only in permissions
+        let permissionFound = false;
+        panel.querySelectorAll('.permission-name').forEach(element => {
+            if (element.textContent.toLowerCase().includes(searchTerm)) {
+                permissionFound = true;
+                element.innerHTML = highlightText(element.textContent, searchTerm);
+            }
+        });
+        
+        if (permissionFound) {
+            matchFound = true;
+        }
+        
+        if (matchFound) {
+            totalMatches++;
+            accordion.style.display = '';
+            panel.style.display = '';
+            
+            // Auto-expand matching panels
+            if (!accordion.classList.contains('active')) {
+                accordion.classList.add('active');
+                panel.classList.add('active');
+                panel.style.maxHeight = panel.scrollHeight + "px";
+                
+                // Show all permission categories in expanded panels
+                panel.querySelectorAll('.permission-category').forEach(cat => {
+                    cat.style.display = 'block';
+                });
+            }
+        } else {
+            accordion.style.display = 'none';
+            panel.style.display = 'none';
+        }
+    });
+    
+    // Update results count
+    if (totalMatches > 0) {
+        resultsCount.textContent = `Found ${totalMatches} role${totalMatches > 1 ? 's' : ''} matching "${searchTerm}"`;
+        resultsCount.style.display = 'block';
+    } else {
+        resultsCount.textContent = `No results found for "${searchTerm}"`;
+        resultsCount.style.display = 'block';
+    }
+    
+    // Also search in permissions matrix if visible
+    searchInPermissionsMatrix(searchTerm);
+}
+
+function highlightText(text, searchTerm) {
+    const regex = new RegExp(`(${escapeRegExp(searchTerm)})`, 'gi');
+    return text.replace(regex, '<span class="search-highlight">$1</span>');
+}
+
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function clearGlobalSearch() {
+    const searchInput = document.getElementById('globalSearchInput');
+    const clearBtn = document.getElementById('clearSearchBtn');
+    const resultsCount = document.getElementById('searchResultsCount');
+    
+    searchInput.value = '';
+    clearBtn.style.display = 'none';
+    resultsCount.style.display = 'none';
+    searchActive = false;
+    
+    // Restore original content
+    const accordions = document.querySelectorAll('.accordion');
+    accordions.forEach((accordion, index) => {
+        if (originalContent[index]) {
+            accordion.innerHTML = originalContent[index].accordion;
+            const panel = accordion.nextElementSibling;
+            panel.innerHTML = originalContent[index].panel;
+            
+            // Re-attach event listeners to restored content
+            reattachPermissionListeners(panel);
+        }
+        
+        accordion.style.display = '';
+        accordion.nextElementSibling.style.display = '';
+        
+        // Collapse all panels
+        accordion.classList.remove('active');
+        const panel = accordion.nextElementSibling;
+        panel.classList.remove('active');
+        panel.style.maxHeight = null;
+    });
+    
+    // Clear matrix search
+    clearMatrixSearch();
+    
+    // Clear saved content
+    originalContent = {};
+}
+
+function reattachPermissionListeners(panel) {
+    // Re-attach search functionality
+    const searchInput = panel.querySelector('.permission-search');
+    if (searchInput) {
+        searchInput.onkeyup = function() { filterPermissions(this); };
+    }
+    
+    // Re-attach tab functionality
+    panel.querySelectorAll('.permission-tab').forEach(tab => {
+        tab.onclick = function() { showCategory(this, tab.textContent.includes('All') ? 'all' : tab.textContent); };
+    });
+}
+
+function searchInPermissionsMatrix(searchTerm) {
+    const table = document.querySelector('.permissions-matrix-table');
+    if (!table) return;
+    
+    // First, clear any existing highlights
+    clearMatrixSearch();
+    
+    // Search in table cells
+    table.querySelectorAll('td, th').forEach(cell => {
+        if (cell.textContent.toLowerCase().includes(searchTerm)) {
+            cell.innerHTML = highlightText(cell.textContent, searchTerm);
+        }
+    });
+}
+
+function clearMatrixSearch() {
+    const table = document.querySelector('.permissions-matrix-table');
+    if (!table) return;
+    
+    // Remove highlights from matrix
+    table.querySelectorAll('.search-highlight').forEach(highlight => {
+        const parent = highlight.parentNode;
+        parent.replaceChild(document.createTextNode(highlight.textContent), highlight);
+        parent.normalize();
+    });
+}
+
+// Add keyboard shortcut for search (Ctrl+F or Cmd+F)
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        document.getElementById('globalSearchInput').focus();
+    }
+});
 </script>
 </body>
 </html>
-"@
+'@
 
 function Generate-RoleRelationshipDiagramHtml {
   param(
@@ -1733,18 +2326,19 @@ function Generate-RoleRelationshipDiagramHtml {
     });
   }
 
+  var originalNodesState = {}; // To store original color/size for reset
+
   document.addEventListener('DOMContentLoaded', function() {
     if (graphNodes.length > 0) {
       drawRoleGraph();
+      // Initialize original node states after graph is drawn
+      allNodesDataset.getIds().forEach(function(nodeId){
+        var node = allNodesDataset.get(nodeId);
+        originalNodesState[nodeId] = { color: node.color, size: node.size };
+      });
     } else {
       document.getElementById('roleGraphVisualization').innerHTML = '<p style="text-align:center;padding-top:20px;">No data available to display the relationship diagram.</p>';
     }
-  });
-
-  var originalNodesState = {}; // To store original color/size for reset
-  allNodesDataset.getIds().forEach(function(nodeId){
-    var node = allNodesDataset.get(nodeId);
-    originalNodesState[nodeId] = { color: node.color, size: node.size };
   });
 
 
@@ -1809,6 +2403,42 @@ function Generate-RoleRelationshipDiagramHtml {
   return $diagramHtml
 }
 
+# Optimize HTML size function
+function Optimize-HtmlSize {
+  param([string]$Html)
+    
+  Write-Host "Optimizing HTML output size..." -ForegroundColor Yellow
+    
+  # Remove HTML comments (but not JavaScript comments)
+  $optimized = $Html -replace '<!--.*?-->', ''
+    
+  # Don't optimize inside script tags to preserve JavaScript
+  $scriptPattern = '(?s)<script[^>]*>.*?</script>'
+  $scripts = @()
+  $scriptIndex = 0
+    
+  # Extract scripts to preserve them
+  $optimized = [regex]::Replace($optimized, $scriptPattern, {
+    param($match)
+    $script:scripts += $match.Value
+    "###SCRIPT_PLACEHOLDER_$($script:scriptIndex)###"
+    $script:scriptIndex++
+  })
+    
+  # Compress whitespace between tags (but not in scripts)
+  $optimized = $optimized -replace '>\s+<', '><'
+    
+  # Remove unnecessary whitespace (but preserve single spaces)
+  $optimized = $optimized -replace '\s{2,}', ' '
+    
+  # Restore scripts
+  for ($i = 0; $i -lt $script:scripts.Count; $i++) {
+    $optimized = $optimized -replace "###SCRIPT_PLACEHOLDER_$i###", $script:scripts[$i]
+  }
+    
+  return $optimized
+}
+
 # Combine HTML content and save to file
 Write-Host "Generating permissions matrix..." -ForegroundColor Yellow
 $permissionsMatrixHtml = Generate-PermissionsMatrixHtml
@@ -1819,7 +2449,10 @@ $roleRelationshipDiagramHtml = Generate-RoleRelationshipDiagramHtml -Nodes $scri
 Write-Host "Role relationship diagram created successfully" -ForegroundColor Green
 
 Write-Host "Assembling final HTML report..." -ForegroundColor Yellow
-$htmlComplete = $htmlHeader + $htmlRolesOverviewHeader + ($htmlRolesWithScopeTags -join " ") + $permissionsMatrixHtml + $roleRelationshipDiagramHtml + $htmlFooter
+$htmlComplete = $htmlHeader + $htmlRolesOverviewHeader + $htmlRolesWithScopeTags + $permissionsMatrixHtml + $roleRelationshipDiagramHtml + $htmlFooter
+
+# Skip HTML optimization for now as it's breaking JavaScript
+# $htmlComplete = Optimize-HtmlSize -Html $htmlComplete
 
 # Save the HTML file with full path
 $reportFileName = "rbachealthcheck.html"
