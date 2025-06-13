@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.3.2
+.VERSION 0.3.3
 .GUID 552abbe1-5543-41a3-bd39-eab7613593f2
 .AUTHOR ugurk
 .COMPANYNAME
@@ -12,6 +12,7 @@
 .REQUIREDSCRIPTS
 .EXTERNALSCRIPTDEPENDENCIES
 .RELEASENOTES
+Version 0.3.3: Added missing Group.Read.All permission to fix 404 errors when accessing group information.
 Version 0.3.2: Fixed infinite loop issue when groups are deleted or inaccessible. Added proper error handling for 404 errors.
 Version 0.3.1: Fixed a issue with the version number in the HTML report.
 Version 0.3.0: Added welcome banner, progress messages, and option to open HTML report after generation.
@@ -30,7 +31,7 @@ This script provides a comprehensive analysis of Microsoft Intune's Role-Based A
 
 #Requires -Version 7.0
 
-$version = "0.3.2"
+$version = "0.3.3"
 
 # Display welcome banner
 Write-Host "
@@ -52,7 +53,7 @@ Write-Host ""
 
 # Step 1: Connect to Microsoft Graph
 Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
-Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Read.All, DeviceManagementConfiguration.Read.All, User.ReadBasic.All" -NoWelcome
+Connect-MgGraph -Scopes "DeviceManagementRBAC.Read.All, DeviceManagementApps.Read.All, DeviceManagementConfiguration.Read.All, User.ReadBasic.All, Group.Read.All" -NoWelcome
 Write-Host "Connected to Microsoft Graph successfully!" -ForegroundColor Green
 
 # Get tenant information and timestamp
