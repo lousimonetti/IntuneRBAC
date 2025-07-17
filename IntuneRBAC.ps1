@@ -541,68 +541,9 @@ function Get-SecurityRecommendations {
   return $recommendations
 }
 
-function Get-ComplianceChecks {
-  param($roleData)
-  
-  $checks = @{
-    ZeroTrust = @{
-      Passed = 0
-      Failed = 0
-      Checks = [System.Collections.Generic.List[object]]::new()
-    }
-    LeastPrivilege = @{
-      Passed = 0
-      Failed = 0
-      Checks = [System.Collections.Generic.List[object]]::new()
-    }
-    SeparationOfDuties = @{
-      Passed = 0
-      Failed = 0
-      Checks = [System.Collections.Generic.List[object]]::new()
-    }
-  }
-  
-  foreach ($role in $roleData) {
-    # Zero Trust checks
-    if ($role.RiskScore.Factors.ScopeExposure -lt 20) {
-      $checks.ZeroTrust.Passed++
-      $checks.ZeroTrust.Checks.Add(@{
-        RoleName = $role.DisplayName
-        Status = "Pass"
-        Message = "Role has limited scope"
-      })
-    } else {
-      $checks.ZeroTrust.Failed++
-      $checks.ZeroTrust.Checks.Add(@{
-        RoleName = $role.DisplayName
-        Status = "Fail"
-        Message = "Role has organization-wide scope without restrictions"
-      })
-    }
-    
-    # Least Privilege checks
-    if ($role.RiskScore.CriticalPermissionCount -le 3) {
-      $checks.LeastPrivilege.Passed++
-      $checks.LeastPrivilege.Checks.Add(@{
-        RoleName = $role.DisplayName
-        Status = "Pass"
-        Message = "Limited critical permissions"
-      })
-    } else {
-      $checks.LeastPrivilege.Failed++
-      $checks.LeastPrivilege.Checks.Add(@{
-        RoleName = $role.DisplayName
-        Status = "Fail"
-        Message = "Too many critical permissions ($($role.RiskScore.CriticalPermissionCount))"
-      })
-    }
-  }
-  
-  return $checks
-}
 
 function Calculate-OverallHealthScore {
-  param($roleData, $complianceChecks)
+  param($roleData)
   
   $score = 100
   $deductions = @{}
@@ -611,21 +552,20 @@ function Calculate-OverallHealthScore {
   $criticalRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "Critical" }).Count
   $highRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "High" }).Count
   
-  $deductions['CriticalRoles'] = $criticalRoles * 10
-  $deductions['HighRiskRoles'] = $highRoles * 5
+  $deductions['CriticalRoles'] = $criticalRoles * 15
+  $deductions['HighRiskRoles'] = $highRoles * 8
   
-  # Deduct for compliance failures
-  $totalChecks = $complianceChecks.ZeroTrust.Passed + $complianceChecks.ZeroTrust.Failed +
-                 $complianceChecks.LeastPrivilege.Passed + $complianceChecks.LeastPrivilege.Failed
-  
-  if ($totalChecks -gt 0) {
-    $failureRate = ($complianceChecks.ZeroTrust.Failed + $complianceChecks.LeastPrivilege.Failed) / $totalChecks
-    $deductions['ComplianceFailures'] = [Math]::Round($failureRate * 30, 1)
-  }
+  # Deduct for medium risk roles
+  $mediumRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "Medium" }).Count
+  $deductions['MediumRiskRoles'] = $mediumRoles * 3
   
   # Deduct for unused roles
   $unusedCount = ($roleData | Where-Object { $_.IsUnused }).Count
-  $deductions['UnusedRoles'] = [Math]::Min(10, $unusedCount * 2)
+  $deductions['UnusedRoles'] = [Math]::Min(15, $unusedCount * 3)
+  
+  # Deduct for roles with excessive permissions
+  $excessivePermRoles = ($roleData | Where-Object { $_.PermissionCount -gt 50 }).Count
+  $deductions['ExcessivePermissions'] = $excessivePermRoles * 5
   
   # Calculate final score
   $totalDeductions = ($deductions.Values | Measure-Object -Sum).Sum
@@ -2819,11 +2759,8 @@ function Generate-SecurityReviewHtml {
   # Generate recommendations
   $recommendations = Get-SecurityRecommendations -roleData $roleDataArray
   
-  # Perform compliance checks
-  $complianceChecks = Get-ComplianceChecks -roleData $roleDataArray
-  
   # Calculate overall health score
-  $healthScore = Calculate-OverallHealthScore -roleData $roleDataArray -complianceChecks $complianceChecks
+  $healthScore = Calculate-OverallHealthScore -roleData $roleDataArray
   
   # Build HTML
   $reviewBuilder = [System.Text.StringBuilder]::new()
@@ -2850,7 +2787,7 @@ function Generate-SecurityReviewHtml {
       </div>
       <div class='health-score-details'>
         <h3>Security Health Score</h3>
-        <p>Your overall RBAC security posture score based on risk assessment, compliance checks, and best practices.</p>
+        <p>Your overall RBAC security posture score based on risk assessment and security best practices.</p>
         <div class='score-deductions'>
           <h4>Score Breakdown:</h4>
           <ul>
@@ -2938,42 +2875,6 @@ function Generate-SecurityReviewHtml {
   [void]$reviewBuilder.Append(@"
         </tbody>
       </table>
-    </div>
-  </div>
-  
-  <!-- Compliance Status -->
-  <div class='compliance-status'>
-    <h3><i class='fas fa-check-circle'></i> Compliance Status</h3>
-    <div class='compliance-cards'>
-"@)
-  
-  # Display compliance check results
-  foreach ($checkType in @("ZeroTrust", "LeastPrivilege")) {
-    $check = $complianceChecks[$checkType]
-    $passRate = if (($check.Passed + $check.Failed) -gt 0) { 
-      [Math]::Round(($check.Passed / ($check.Passed + $check.Failed)) * 100, 1) 
-    } else { 0 }
-    
-    $statusClass = if ($passRate -ge 80) { "success" } elseif ($passRate -ge 60) { "warning" } else { "danger" }
-    
-    [void]$reviewBuilder.Append(@"
-      <div class='compliance-card'>
-        <h4>$checkType Compliance</h4>
-        <div class='compliance-chart'>
-          <div class='compliance-bar'>
-            <div class='compliance-fill $statusClass' style='width: $passRate%'></div>
-          </div>
-          <span class='compliance-percentage'>$passRate%</span>
-        </div>
-        <div class='compliance-stats'>
-          <span class='passed'>✓ $($check.Passed) Passed</span>
-          <span class='failed'>✗ $($check.Failed) Failed</span>
-        </div>
-      </div>
-"@)
-  }
-  
-  [void]$reviewBuilder.Append(@"
     </div>
   </div>
   
@@ -3076,7 +2977,7 @@ function Generate-SecurityReviewHtml {
   color: var(--text-color);
 }
 
-.risk-distribution, .top-risk-roles, .compliance-status, .security-recommendations {
+.risk-distribution, .top-risk-roles, .security-recommendations {
   background-color: var(--surface-color);
   border-radius: 10px;
   padding: 25px;
@@ -3182,58 +3083,6 @@ function Generate-SecurityReviewHtml {
   color: white;
 }
 
-.compliance-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 20px;
-  margin-top: 20px;
-}
-
-.compliance-card {
-  padding: 20px;
-  background-color: var(--card-background);
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-}
-
-.compliance-bar {
-  height: 20px;
-  background-color: #e0e0e0;
-  border-radius: 10px;
-  overflow: hidden;
-  margin: 10px 0;
-}
-
-.compliance-fill {
-  height: 100%;
-  transition: width 0.5s ease;
-}
-
-.compliance-fill.success {
-  background-color: #27AE60;
-}
-
-.compliance-fill.warning {
-  background-color: #F7931E;
-}
-
-.compliance-fill.danger {
-  background-color: var(--error-color);
-}
-
-.compliance-stats {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 10px;
-}
-
-.compliance-stats .passed {
-  color: #27AE60;
-}
-
-.compliance-stats .failed {
-  color: var(--error-color);
-}
 
 .recommendations-list {
   margin-top: 20px;
