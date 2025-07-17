@@ -1,5 +1,5 @@
 <#PSScriptInfo
-.VERSION 0.4.0
+.VERSION 0.5.0
 .GUID 552abbe1-5543-41a3-bd39-eab7613593f2
 .AUTHOR ugurk
 .COMPANYNAME
@@ -12,6 +12,14 @@
 .REQUIREDSCRIPTS
 .EXTERNALSCRIPTDEPENDENCIES
 .RELEASENOTES
+Version 0.5.0: Security Review Feature Release:
+- Added comprehensive Security Review section with risk assessment
+- Implemented multi-dimensional risk scoring for RBAC roles
+- Added security recommendations engine with actionable insights
+- Created compliance checks for Zero Trust and least privilege
+- Added interactive security dashboard with health scores
+- Implemented remediation tracking and priority guidance
+- Added detailed security export for audit reports
 Version 0.4.0: Major update with performance improvements and new features:
 - Added Dark Mode toggle with persistent preference storage
 - Added Export to CSV functionality for roles, permissions matrix, and security analysis
@@ -39,7 +47,7 @@ This script provides a comprehensive analysis of Microsoft Intune's Role-Based A
 
 #Requires -Version 7.0
 
-$version = "0.4.0"
+$version = "0.5.0"
 
 # Display welcome banner
 Write-Host "
@@ -81,6 +89,16 @@ $script:allRoleNamesForMatrixData = [System.Collections.Generic.List[string]]::n
 $script:graphNodes = [System.Collections.Generic.List[object]]::new()
 $script:graphLinks = [System.Collections.Generic.List[object]]::new()
 $script:processedGraphNodeIds = [System.Collections.Generic.HashSet[string]]::new()
+
+# Security Review variables
+$script:securityReviewData = @{
+  RoleRiskScores      = @{}
+  CriticalPermissions = @{}
+  SecurityFindings    = [System.Collections.Generic.List[object]]::new()
+  ComplianceChecks    = @{}
+  Recommendations     = [System.Collections.Generic.List[object]]::new()
+  OverallHealthScore  = 0
+}
 
 # Fetch all roles first
 $rolesUri = "https://graph.microsoft.com/beta/deviceManagement/roleDefinitions"
@@ -332,6 +350,286 @@ function Get-OverlappingPermissions {
   return $overlaps
 }
 
+# Security Review Functions
+function Get-CriticalPermissions {
+  # Define critical permissions with risk scores
+  # SCORING GUIDE:
+  # 40 points = Critical operations that can severely impact devices/data (wipe, delete)
+  # 35 points = High-impact operations that affect security or device state
+  # 30 points = Operations that can modify or remove important configurations
+  # 25 points = Create/Update operations that change system behavior
+  # 20 points = Standard modification operations
+  # 10 points = Read operations with security implications
+  # 5 points  = Basic read-only operations
+  
+  # TO CUSTOMIZE: Modify the scores below based on your organization's risk tolerance
+  # Higher scores = Higher risk assessment for that permission
+  
+  return @{
+    # Device Management - Critical (can brick or compromise devices)
+    "Devices_Delete"                 = 40          # Can remove device from management
+    "Devices_Wipe"                   = 40           # Can wipe all data from device
+    "Devices_ResetPasscode"          = 35  # Can lock users out of devices
+    "Devices_DisableLostMode"        = 30 # Can disable security feature
+    "Devices_Retire"                 = 35         # Can remove corporate data
+    "Devices_RemoteLock"             = 30     # Can lock devices remotely
+    
+    # App Management - High Risk (can affect app availability)
+    "MobileApps_Delete"              = 30      # Can remove apps from catalog
+    "MobileApps_Create"              = 25      # Can add potentially malicious apps
+    "MobileApps_Update"              = 25      # Can modify app behavior
+    "MobileApps_Assign"              = 30      # Can deploy apps to devices
+    
+    # Policy Configuration - High Risk (can change security posture)
+    "DeviceConfigurations_Delete"    = 30  # Can remove security configs
+    "DeviceConfigurations_Create"    = 25  # Can create conflicting policies
+    "DeviceConfigurations_Update"    = 25  # Can weaken security settings
+    "DeviceConfigurations_Assign"    = 30  # Can apply policies broadly
+    
+    # Security Policies - Critical (direct security impact)
+    "SecurityBaselines_Update"       = 35     # Can weaken security baselines
+    "SecurityBaselines_Assign"       = 35     # Can apply weak baselines
+    "CompliancePolicies_Delete"      = 30    # Can remove compliance checks
+    "ConditionalAccess_Update"       = 40     # Can bypass access controls
+    
+    # User/Group Management - High Risk
+    "EnrollmentProgramTokens_Delete" = 35  # Can break enrollment
+    "DepOnboardingSettings_Update"   = 30    # Can affect device provisioning
+    "ManagedAppPolicies_Delete"      = 25       # Can remove app protections
+    
+    # Read Operations - Lower Risk (information disclosure only)
+    "Devices_Read"                   = 10               # Can view device inventory
+    "MobileApps_Read"                = 10           # Can view app catalog
+    "DeviceConfigurations_Read"      = 10 # Can view configurations
+    "Reports_Read"                   = 5               # Can view reports only
+  }
+}
+
+function Get-PermissionRiskScore {
+  param($permission)
+  
+  $criticalPermissions = Get-CriticalPermissions
+  $cleanPermission = $permission.Replace("Microsoft.Intune_", "")
+  
+  # Check if it's a known critical permission
+  if ($criticalPermissions.ContainsKey($cleanPermission)) {
+    return $criticalPermissions[$cleanPermission]
+  }
+  
+  # Pattern-based risk assessment
+  if ($cleanPermission -match "_Delete$|_Wipe$|_Reset") { return 30 }
+  if ($cleanPermission -match "_Create$|_Update$|_Assign$") { return 20 }
+  if ($cleanPermission -match "_Read$|_View$") { return 10 }
+  if ($cleanPermission -match "Security|Compliance|Conditional") { return 25 }
+  
+  # Default risk score
+  return 15
+}
+
+function Calculate-RoleRiskScore {
+  param(
+    $role,
+    $permissions,
+    $assignments,
+    $userCount
+  )
+  
+  # RISK SCORING METHODOLOGY:
+  # Total risk score ranges from 0-100 points, calculated from 4 factors:
+  # 1. Permission Criticality (0-40 points) - What can this role do?
+  # 2. Scope Exposure (0-20 points) - How broadly can it act?
+  # 3. User Exposure (0-20 points) - How many people have this access?
+  # 4. Configuration Risk (0-20 points) - Is it custom? Too many permissions?
+  
+  $riskScore = 0
+  $riskFactors = @{}
+  
+  # Factor 1: Permission Criticality (0-40 points)
+  # Evaluates the potential damage from permissions granted
+  # TO CUSTOMIZE: Adjust the normalization factor (currently *2) to weight permissions differently
+  $permissionScore = 0
+  $criticalPermCount = 0
+  foreach ($permission in $permissions) {
+    $permRisk = Get-PermissionRiskScore -permission $permission
+    $permissionScore += $permRisk
+    if ($permRisk -ge 30) { $criticalPermCount++ }  # Count high-risk permissions
+  }
+  # Average permission risk * 2 to scale to 40-point maximum
+  $permissionScore = [Math]::Min(40, ($permissionScore / [Math]::Max(1, $permissions.Count)) * 2)
+  $riskFactors['PermissionCriticality'] = [Math]::Round($permissionScore, 1)
+  
+  # Factor 2: Scope Exposure (0-20 points)
+  # Evaluates how broadly the role can impact the organization
+  # TO CUSTOMIZE: Adjust point values based on your scope tag strategy
+  $scopeScore = 0
+  if ($role.roleScopeTagIds.Count -eq 0) {
+    $scopeScore = 20  # No scope tags = organization-wide access (highest risk)
+  }
+  elseif ($role.roleScopeTagIds.Count -gt 2) {
+    $scopeScore = 15  # Multiple scopes = broader access
+  }
+  else {
+    $scopeScore = 10  # Single scope = limited access (lowest risk)
+  }
+  $riskFactors['ScopeExposure'] = $scopeScore
+  
+  # Factor 3: User Exposure (0-20 points)
+  # Evaluates risk based on number of users with this role
+  # TO CUSTOMIZE: Adjust thresholds based on your organization size
+  $userScore = 0
+  if ($userCount -gt 50) { $userScore = 20 }      # Many users = higher risk
+  elseif ($userCount -gt 20) { $userScore = 15 }  # Moderate users
+  elseif ($userCount -gt 5) { $userScore = 10 }   # Few users
+  elseif ($userCount -gt 0) { $userScore = 5 }    # Very few users
+  # 0 users = 0 points (handled by unused role detection)
+  $riskFactors['UserExposure'] = $userScore
+  
+  # Factor 4: Configuration Risk (0-20 points)
+  # Evaluates risk from role configuration
+  # TO CUSTOMIZE: Adjust thresholds for permission counts and critical permission limits
+  $configScore = 0
+  if (-not $role.isBuiltIn -and $permissions.Count -gt 20) { 
+    $configScore += 10  # Custom role with many permissions = higher risk
+  }
+  if ($criticalPermCount -gt 5) { 
+    $configScore += 10  # Too many critical permissions in one role
+  }
+  $riskFactors['ConfigurationRisk'] = $configScore
+  
+  # Calculate total risk score (sum of all factors)
+  $riskScore = $riskFactors['PermissionCriticality'] + $riskFactors['ScopeExposure'] + 
+  $riskFactors['UserExposure'] + $riskFactors['ConfigurationRisk']
+  
+  return @{
+    TotalScore              = [Math]::Round($riskScore, 1)
+    Factors                 = $riskFactors
+    Level                   = Get-RiskLevel -score $riskScore
+    CriticalPermissionCount = $criticalPermCount
+  }
+}
+
+function Get-RiskLevel {
+  param($score)
+  
+  if ($score -ge 80) { return "Critical" }
+  if ($score -ge 60) { return "High" }
+  if ($score -ge 40) { return "Medium" }
+  return "Low"
+}
+
+function Get-SecurityRecommendations {
+  param($roleData)
+  
+  $recommendations = [System.Collections.Generic.List[object]]::new()
+  
+  foreach ($role in $roleData) {
+    if ($role.RiskScore.Level -eq "Critical" -or $role.RiskScore.Level -eq "High") {
+      # High risk recommendations
+      if ($role.RiskScore.Factors.PermissionCriticality -gt 30) {
+        $recommendations.Add(@{
+            RoleId         = $role.Id
+            RoleName       = $role.DisplayName
+            Priority       = "High"
+            Category       = "Excessive Permissions"
+            Recommendation = "Review and reduce critical permissions. Consider splitting into multiple roles."
+            Impact         = "Reduces potential damage from compromised accounts"
+          })
+      }
+      
+      if ($role.RiskScore.Factors.ScopeExposure -eq 20) {
+        $recommendations.Add(@{
+            RoleId         = $role.Id
+            RoleName       = $role.DisplayName
+            Priority       = "High"
+            Category       = "Scope Management"
+            Recommendation = "Implement scope tags to limit role access to specific device groups"
+            Impact         = "Limits blast radius of security incidents"
+          })
+      }
+      
+      if ($role.UserCount -gt 50) {
+        $recommendations.Add(@{
+            RoleId         = $role.Id
+            RoleName       = $role.DisplayName
+            Priority       = "Medium"
+            Category       = "User Management"
+            Recommendation = "Large number of users ($($role.UserCount)). Consider creating sub-roles with limited permissions."
+            Impact         = "Follows principle of least privilege"
+          })
+      }
+    }
+    
+    # Unused role recommendations
+    if ($role.IsUnused) {
+      $recommendations.Add(@{
+          RoleId         = $role.Id
+          RoleName       = $role.DisplayName
+          Priority       = "Low"
+          Category       = "Role Hygiene"
+          Recommendation = "Role is unused. Consider removing if no longer needed."
+          Impact         = "Reduces attack surface"
+        })
+    }
+  }
+  
+  return $recommendations
+}
+
+
+function Calculate-OverallHealthScore {
+  param($roleData)
+  
+  # HEALTH SCORE CALCULATION:
+  # Starts at 100 points (perfect score) and deducts points based on security issues
+  # Final score determines letter grade: A (90-100), B (80-89), C (70-79), D (60-69), F (0-59)
+  
+  $score = 100
+  $deductions = @{}
+  
+  # DEDUCTION RULES - TO CUSTOMIZE: Adjust point values based on your risk tolerance
+  
+  # 1. High-risk roles (larger deductions for more serious risks)
+  $criticalRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "Critical" }).Count
+  $highRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "High" }).Count
+  
+  $deductions['CriticalRoles'] = $criticalRoles * 15  # Each critical role = -15 points
+  $deductions['HighRiskRoles'] = $highRoles * 8       # Each high risk role = -8 points
+  
+  # 2. Medium risk roles (moderate deduction)
+  $mediumRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "Medium" }).Count
+  $deductions['MediumRiskRoles'] = $mediumRoles * 3   # Each medium risk role = -3 points
+  
+  # 3. Unused roles (security hygiene issue)
+  # TO CUSTOMIZE: Adjust the multiplier (3) or cap (15) based on importance
+  $unusedCount = ($roleData | Where-Object { $_.IsUnused }).Count
+  $deductions['UnusedRoles'] = [Math]::Min(15, $unusedCount * 3)  # -3 per unused role, max -15
+  
+  # 4. Roles with excessive permissions (violates least privilege)
+  # TO CUSTOMIZE: Adjust the threshold (50) based on your environment
+  $excessivePermRoles = ($roleData | Where-Object { $_.PermissionCount -gt 50 }).Count
+  $deductions['ExcessivePermissions'] = $excessivePermRoles * 5   # Each over-privileged role = -5 points
+  
+  # Calculate final score (cannot go below 0)
+  $totalDeductions = ($deductions.Values | Measure-Object -Sum).Sum
+  $finalScore = [Math]::Max(0, $score - $totalDeductions)
+  
+  return @{
+    Score      = [Math]::Round($finalScore, 1)
+    Deductions = $deductions
+    Grade      = Get-HealthGrade -score $finalScore
+  }
+}
+
+function Get-HealthGrade {
+  param($score)
+  
+  if ($score -ge 90) { return "A" }
+  if ($score -ge 80) { return "B" }
+  if ($score -ge 70) { return "C" }
+  if ($score -ge 60) { return "D" }
+  return "F"
+}
+
 # Function to Fetch Roles and their Scope Tags
 function Get-RolesWithScopeTags {
   param(
@@ -394,6 +692,31 @@ function Get-RolesWithScopeTags {
     # Update counters
     if ($isUnused) { $script:unusedRolesCount++ }
     if ($hasOverlappingPermissions) { $script:rolesWithOverlappingPermissionsCount++ }
+    
+    # Security Review: Calculate risk score and collect data
+    $roleAssignments = Get-RoleAssignments -roleId $role.id
+    $totalUserCount = 0
+    foreach ($assignment in $roleAssignments) {
+      $roleMembers = Get-RoleMembers -roleDefinitionId $assignment.RoleDefinitionId
+      foreach ($member in $roleMembers) {
+        $groupMembers = Get-GroupMembers -groupId $member.GroupId
+        $totalUserCount += $groupMembers.Count
+      }
+    }
+    
+    # Calculate risk score
+    $riskScore = Calculate-RoleRiskScore -role $role -permissions $allowedActions -assignments $roleAssignments -userCount $totalUserCount
+    
+    # Store security review data
+    $script:securityReviewData.RoleRiskScores[$role.id] = @{
+      RoleId                    = $role.id
+      DisplayName               = $role.displayName
+      RiskScore                 = $riskScore
+      UserCount                 = $totalUserCount
+      IsUnused                  = $isUnused
+      HasOverlappingPermissions = $hasOverlappingPermissions
+      PermissionCount           = $allowedActions.Count
+    }
 
     $roleType = if ($role.isBuiltIn) { "Built-In Role" } else { "Custom Role" }
         
@@ -419,6 +742,14 @@ function Get-RolesWithScopeTags {
     if ($hasOverlappingPermissions) {
       $securityBadges += "<span class='security-badge info'><i class='fas fa-info-circle'></i> Overlapping Permissions</span>"
     }
+    # Add risk score badge
+    $riskClass = switch ($riskScore.Level) {
+      "Critical" { "critical" }
+      "High" { "high" }
+      "Medium" { "medium" }
+      default { "low" }
+    }
+    $securityBadges += "<span class='security-badge risk-$riskClass'><i class='fas fa-shield-alt'></i> Risk: $($riskScore.Level) ($($riskScore.TotalScore))</span>"
     $securityBadges += "</div>"
 
     # Start the accordion for each role
@@ -714,6 +1045,9 @@ $navigationButtons = @"
         </a>
         <a href="#role-relationship-diagram-section" class="hero-button">
           <i class="fas fa-project-diagram"></i> Relationship Diagram
+        </a>
+        <a href="#security-review-section" class="hero-button">
+          <i class="fas fa-clipboard-check"></i> Security Review
         </a>
 "@
 
@@ -1142,6 +1476,22 @@ h2 {
 
 .security-badge.info {
   background-color: var(--info-color);
+  color: white;
+}
+.security-badge.risk-critical {
+  background-color: var(--error-color);
+  color: white;
+}
+.security-badge.risk-high {
+  background-color: #FF6B35;
+  color: white;
+}
+.security-badge.risk-medium {
+  background-color: #F7931E;
+  color: white;
+}
+.security-badge.risk-low {
+  background-color: #27AE60;
   color: white;
 }
 
@@ -2419,11 +2769,11 @@ function Optimize-HtmlSize {
     
   # Extract scripts to preserve them
   $optimized = [regex]::Replace($optimized, $scriptPattern, {
-    param($match)
-    $script:scripts += $match.Value
-    "###SCRIPT_PLACEHOLDER_$($script:scriptIndex)###"
-    $script:scriptIndex++
-  })
+      param($match)
+      $script:scripts += $match.Value
+      "###SCRIPT_PLACEHOLDER_$($script:scriptIndex)###"
+      $script:scriptIndex++
+    })
     
   # Compress whitespace between tags (but not in scripts)
   $optimized = $optimized -replace '>\s+<', '><'
@@ -2439,6 +2789,460 @@ function Optimize-HtmlSize {
   return $optimized
 }
 
+function Generate-SecurityReviewHtml {
+  Write-Host "Building Security Review dashboard..." -ForegroundColor Yellow
+  
+  # Prepare role data
+  $roleDataArray = @()
+  foreach ($roleId in $script:securityReviewData.RoleRiskScores.Keys) {
+    $roleDataArray += $script:securityReviewData.RoleRiskScores[$roleId]
+  }
+  
+  # Generate recommendations
+  $recommendations = Get-SecurityRecommendations -roleData $roleDataArray
+  
+  # Calculate overall health score
+  $healthScore = Calculate-OverallHealthScore -roleData $roleDataArray
+  
+  # Build HTML
+  $reviewBuilder = [System.Text.StringBuilder]::new()
+  
+  # Security Review Header
+  [void]$reviewBuilder.Append(@"
+<div id='security-review-section' class='container-section'>
+  <h2><i class='fas fa-clipboard-check'></i> Security Review Dashboard</h2>
+  
+  <!-- Overall Health Score -->
+  <div class='security-health-score'>
+    <div class='health-score-container'>
+      <div class='health-score-circle' data-score='$($healthScore.Score)'>
+        <svg viewBox='0 0 200 200'>
+          <circle cx='100' cy='100' r='90' fill='none' stroke='#e0e0e0' stroke-width='20'/>
+          <circle cx='100' cy='100' r='90' fill='none' stroke='$(Get-HealthScoreColor -score $healthScore.Score)' 
+                  stroke-width='20' stroke-dasharray='$(565.48 * $healthScore.Score / 100) 565.48' 
+                  stroke-dashoffset='0' transform='rotate(-90 100 100)'/>
+        </svg>
+        <div class='health-score-text'>
+          <span class='health-score-number'>$($healthScore.Score)</span>
+          <span class='health-score-grade'>Grade: $($healthScore.Grade)</span>
+        </div>
+      </div>
+      <div class='health-score-details'>
+        <h3>Security Health Score</h3>
+        <p>Your overall RBAC security posture score based on risk assessment and security best practices.</p>
+        <div class='score-deductions'>
+          <h4>Score Breakdown:</h4>
+          <ul>
+"@)
+  
+  foreach ($deduction in $healthScore.Deductions.GetEnumerator()) {
+    if ($deduction.Value -gt 0) {
+      [void]$reviewBuilder.Append("<li>$($deduction.Key): -$($deduction.Value) points</li>")
+    }
+  }
+  
+  [void]$reviewBuilder.Append(@"
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Risk Distribution -->
+  <div class='risk-distribution'>
+    <h3><i class='fas fa-chart-pie'></i> Risk Distribution</h3>
+    <div class='risk-stats-grid'>
+"@)
+  
+  # Calculate risk distribution
+  $riskLevels = @{
+    Critical = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Critical" }).Count
+    High     = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "High" }).Count
+    Medium   = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Medium" }).Count
+    Low      = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Low" }).Count
+  }
+  
+  foreach ($level in @("Critical", "High", "Medium", "Low")) {
+    $count = $riskLevels[$level]
+    $percentage = if ($roleDataArray.Count -gt 0) { [Math]::Round(($count / $roleDataArray.Count) * 100, 1) } else { 0 }
+    $colorClass = "risk-$($level.ToLower())"
+    
+    [void]$reviewBuilder.Append(@"
+      <div class='risk-stat-card $colorClass'>
+        <div class='risk-stat-icon'><i class='fas fa-shield-alt'></i></div>
+        <div class='risk-stat-number'>$count</div>
+        <div class='risk-stat-label'>$level Risk</div>
+        <div class='risk-stat-percentage'>$percentage%</div>
+      </div>
+"@)
+  }
+  
+  [void]$reviewBuilder.Append(@"
+    </div>
+  </div>
+  
+  <!-- Top Risk Roles -->
+  <div class='top-risk-roles'>
+    <h3><i class='fas fa-exclamation-triangle'></i> Highest Risk Roles</h3>
+    <div class='risk-roles-table'>
+      <table>
+        <thead>
+          <tr>
+            <th>Role Name</th>
+            <th>Risk Score</th>
+            <th>Risk Level</th>
+            <th>Users</th>
+            <th>Critical Permissions</th>
+          </tr>
+        </thead>
+        <tbody>
+"@)
+  
+  # Get top 10 highest risk roles
+  $topRiskRoles = $roleDataArray | Sort-Object { $_.RiskScore.TotalScore } -Descending | Select-Object -First 10
+  
+  foreach ($role in $topRiskRoles) {
+    $riskClass = "risk-$($role.RiskScore.Level.ToLower())"
+    [void]$reviewBuilder.Append(@"
+          <tr>
+            <td>$($role.DisplayName)</td>
+            <td><span class='risk-score-badge $riskClass'>$($role.RiskScore.TotalScore)</span></td>
+            <td><span class='risk-level-badge $riskClass'>$($role.RiskScore.Level)</span></td>
+            <td>$($role.UserCount)</td>
+            <td>$($role.RiskScore.CriticalPermissionCount)</td>
+          </tr>
+"@)
+  }
+  
+  [void]$reviewBuilder.Append(@"
+        </tbody>
+      </table>
+    </div>
+  </div>
+  
+  <!-- Security Recommendations -->
+  <div class='security-recommendations'>
+    <div style='display: flex; justify-content: space-between; align-items: center;'>
+      <h3><i class='fas fa-lightbulb'></i> Security Recommendations</h3>
+      <button class='hero-button' onclick='exportSecurityReview()' style='background-color: var(--accent-color); margin: 0;'>
+        <i class='fas fa-file-pdf'></i> Export Security Review
+      </button>
+    </div>
+    <div class='recommendations-list'>
+"@)
+  
+  # Group recommendations by priority
+  $priorityGroups = $recommendations | Group-Object -Property Priority
+  
+  foreach ($priority in @("High", "Medium", "Low")) {
+    $group = $priorityGroups | Where-Object { $_.Name -eq $priority }
+    if ($group) {
+      [void]$reviewBuilder.Append("<div class='priority-group priority-$($priority.ToLower())'>")
+      [void]$reviewBuilder.Append("<h4><i class='fas fa-flag'></i> $priority Priority</h4>")
+      
+      foreach ($rec in $group.Group) {
+        [void]$reviewBuilder.Append(@"
+        <div class='recommendation-card'>
+          <div class='rec-header'>
+            <span class='rec-role'>$($rec.RoleName)</span>
+            <span class='rec-category'>$($rec.Category)</span>
+          </div>
+          <p class='rec-text'>$($rec.Recommendation)</p>
+          <p class='rec-impact'><i class='fas fa-info-circle'></i> Impact: $($rec.Impact)</p>
+        </div>
+"@)
+      }
+      [void]$reviewBuilder.Append("</div>")
+    }
+  }
+  
+  [void]$reviewBuilder.Append(@"
+    </div>
+  </div>
+</div>
+
+<style>
+/* Security Review Styles */
+.security-health-score {
+  background-color: var(--surface-color);
+  border-radius: 10px;
+  padding: 30px;
+  margin: 20px 0;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.health-score-container {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+
+.health-score-circle {
+  position: relative;
+  width: 200px;
+  height: 200px;
+}
+
+.health-score-circle svg {
+  width: 100%;
+  height: 100%;
+}
+
+.health-score-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.health-score-number {
+  display: block;
+  font-size: 3em;
+  font-weight: bold;
+  color: var(--primary-color);
+}
+
+.health-score-grade {
+  display: block;
+  font-size: 1.2em;
+  color: var(--text-color);
+}
+
+.score-deductions ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.score-deductions li {
+  padding: 5px 0;
+  color: var(--text-color);
+}
+
+.risk-distribution, .top-risk-roles, .security-recommendations {
+  background-color: var(--surface-color);
+  border-radius: 10px;
+  padding: 25px;
+  margin: 20px 0;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.risk-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.risk-stat-card {
+  text-align: center;
+  padding: 20px;
+  border-radius: 8px;
+  transition: transform 0.3s;
+}
+
+.risk-stat-card:hover {
+  transform: translateY(-5px);
+}
+
+.risk-stat-card.risk-critical {
+  background-color: rgba(239, 71, 111, 0.1);
+  border: 2px solid var(--error-color);
+}
+
+.risk-stat-card.risk-high {
+  background-color: rgba(255, 107, 53, 0.1);
+  border: 2px solid #FF6B35;
+}
+
+.risk-stat-card.risk-medium {
+  background-color: rgba(247, 147, 30, 0.1);
+  border: 2px solid #F7931E;
+}
+
+.risk-stat-card.risk-low {
+  background-color: rgba(39, 174, 96, 0.1);
+  border: 2px solid #27AE60;
+}
+
+.risk-stat-icon {
+  font-size: 2em;
+  margin-bottom: 10px;
+}
+
+.risk-stat-number {
+  font-size: 2.5em;
+  font-weight: bold;
+}
+
+.risk-stat-percentage {
+  font-size: 0.9em;
+  color: var(--text-color);
+  opacity: 0.8;
+}
+
+.risk-roles-table table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+}
+
+.risk-roles-table th,
+.risk-roles-table td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.risk-score-badge, .risk-level-badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: bold;
+  font-size: 0.9em;
+}
+
+.risk-score-badge.risk-critical,
+.risk-level-badge.risk-critical {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.risk-score-badge.risk-high,
+.risk-level-badge.risk-high {
+  background-color: #FF6B35;
+  color: white;
+}
+
+.risk-score-badge.risk-medium,
+.risk-level-badge.risk-medium {
+  background-color: #F7931E;
+  color: white;
+}
+
+.risk-score-badge.risk-low,
+.risk-level-badge.risk-low {
+  background-color: #27AE60;
+  color: white;
+}
+
+
+.recommendations-list {
+  margin-top: 20px;
+}
+
+.priority-group {
+  margin-bottom: 30px;
+}
+
+.priority-group h4 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.recommendation-card {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.rec-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.rec-role {
+  font-weight: bold;
+  color: var(--primary-color);
+}
+
+.rec-category {
+  background-color: var(--surface-color);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.8em;
+}
+
+.rec-text {
+  margin: 10px 0;
+  color: var(--text-color);
+}
+
+.rec-impact {
+  font-size: 0.9em;
+  color: var(--text-color);
+  opacity: 0.8;
+}
+</style>
+
+<script>
+function exportSecurityReview() {
+    // Prepare security review data
+    const reviewData = {
+        generatedDate: new Date().toISOString(),
+        healthScore: $($healthScore.Score),
+        grade: '$($healthScore.Grade)',
+        riskDistribution: $(ConvertTo-Json $riskLevels -Compress),
+        recommendations: $(ConvertTo-Json $recommendations -Compress)
+    };
+    
+    // Create CSV data
+    const csvData = [];
+    
+    // Add summary
+    csvData.push({
+        'Category': 'Overall Health Score',
+        'Value': reviewData.healthScore,
+        'Details': 'Grade: ' + reviewData.grade
+    });
+    
+    // Add risk distribution
+    Object.entries(reviewData.riskDistribution).forEach(([level, count]) => {
+        csvData.push({
+            'Category': 'Risk Distribution',
+            'Value': level,
+            'Details': count + ' roles'
+        });
+    });
+    
+    // Add recommendations
+    reviewData.recommendations.forEach(rec => {
+        csvData.push({
+            'Category': 'Recommendation',
+            'Value': rec.RoleName,
+            'Details': rec.Recommendation + ' (Priority: ' + rec.Priority + ')'
+        });
+    });
+    
+    exportToCSV(csvData, 'intune_security_review_export.csv');
+}
+
+function getHealthScoreColor(score) {
+    if (score >= 80) return '#27AE60';
+    if (score >= 60) return '#F7931E';
+    if (score >= 40) return '#FF6B35';
+    return '#EF476F';
+}
+</script>
+"@)
+  
+  Write-Host "Security Review dashboard built successfully" -ForegroundColor Green
+  return $reviewBuilder.ToString()
+}
+
+function Get-HealthScoreColor {
+  param($score)
+  
+  if ($score -ge 80) { return "#27AE60" }
+  if ($score -ge 60) { return "#F7931E" }
+  if ($score -ge 40) { return "#FF6B35" }
+  return "#EF476F"
+}
+
 # Combine HTML content and save to file
 Write-Host "Generating permissions matrix..." -ForegroundColor Yellow
 $permissionsMatrixHtml = Generate-PermissionsMatrixHtml
@@ -2448,8 +3252,12 @@ Write-Host "Creating interactive role relationship diagram..." -ForegroundColor 
 $roleRelationshipDiagramHtml = Generate-RoleRelationshipDiagramHtml -Nodes $script:graphNodes -Links $script:graphLinks
 Write-Host "Role relationship diagram created successfully" -ForegroundColor Green
 
+Write-Host "Generating Security Review dashboard..." -ForegroundColor Yellow
+$securityReviewHtml = Generate-SecurityReviewHtml
+Write-Host "Security Review dashboard generated successfully" -ForegroundColor Green
+
 Write-Host "Assembling final HTML report..." -ForegroundColor Yellow
-$htmlComplete = $htmlHeader + $htmlRolesOverviewHeader + $htmlRolesWithScopeTags + $permissionsMatrixHtml + $roleRelationshipDiagramHtml + $htmlFooter
+$htmlComplete = $htmlHeader + $htmlRolesOverviewHeader + $htmlRolesWithScopeTags + $permissionsMatrixHtml + $roleRelationshipDiagramHtml + $securityReviewHtml + $htmlFooter
 
 # Skip HTML optimization for now as it's breaking JavaScript
 # $htmlComplete = Optimize-HtmlSize -Html $htmlComplete
