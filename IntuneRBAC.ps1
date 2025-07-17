@@ -353,43 +353,55 @@ function Get-OverlappingPermissions {
 # Security Review Functions
 function Get-CriticalPermissions {
   # Define critical permissions with risk scores
+  # SCORING GUIDE:
+  # 40 points = Critical operations that can severely impact devices/data (wipe, delete)
+  # 35 points = High-impact operations that affect security or device state
+  # 30 points = Operations that can modify or remove important configurations
+  # 25 points = Create/Update operations that change system behavior
+  # 20 points = Standard modification operations
+  # 10 points = Read operations with security implications
+  # 5 points  = Basic read-only operations
+  
+  # TO CUSTOMIZE: Modify the scores below based on your organization's risk tolerance
+  # Higher scores = Higher risk assessment for that permission
+  
   return @{
-    # Device Management - Critical
-    "Devices_Delete" = 40
-    "Devices_Wipe" = 40
-    "Devices_ResetPasscode" = 35
-    "Devices_DisableLostMode" = 30
-    "Devices_Retire" = 35
-    "Devices_RemoteLock" = 30
+    # Device Management - Critical (can brick or compromise devices)
+    "Devices_Delete" = 40          # Can remove device from management
+    "Devices_Wipe" = 40           # Can wipe all data from device
+    "Devices_ResetPasscode" = 35  # Can lock users out of devices
+    "Devices_DisableLostMode" = 30 # Can disable security feature
+    "Devices_Retire" = 35         # Can remove corporate data
+    "Devices_RemoteLock" = 30     # Can lock devices remotely
     
-    # App Management - High Risk
-    "MobileApps_Delete" = 30
-    "MobileApps_Create" = 25
-    "MobileApps_Update" = 25
-    "MobileApps_Assign" = 30
+    # App Management - High Risk (can affect app availability)
+    "MobileApps_Delete" = 30      # Can remove apps from catalog
+    "MobileApps_Create" = 25      # Can add potentially malicious apps
+    "MobileApps_Update" = 25      # Can modify app behavior
+    "MobileApps_Assign" = 30      # Can deploy apps to devices
     
-    # Policy Configuration - High Risk
-    "DeviceConfigurations_Delete" = 30
-    "DeviceConfigurations_Create" = 25
-    "DeviceConfigurations_Update" = 25
-    "DeviceConfigurations_Assign" = 30
+    # Policy Configuration - High Risk (can change security posture)
+    "DeviceConfigurations_Delete" = 30  # Can remove security configs
+    "DeviceConfigurations_Create" = 25  # Can create conflicting policies
+    "DeviceConfigurations_Update" = 25  # Can weaken security settings
+    "DeviceConfigurations_Assign" = 30  # Can apply policies broadly
     
-    # Security Policies - Critical
-    "SecurityBaselines_Update" = 35
-    "SecurityBaselines_Assign" = 35
-    "CompliancePolicies_Delete" = 30
-    "ConditionalAccess_Update" = 40
+    # Security Policies - Critical (direct security impact)
+    "SecurityBaselines_Update" = 35     # Can weaken security baselines
+    "SecurityBaselines_Assign" = 35     # Can apply weak baselines
+    "CompliancePolicies_Delete" = 30    # Can remove compliance checks
+    "ConditionalAccess_Update" = 40     # Can bypass access controls
     
     # User/Group Management - High Risk
-    "EnrollmentProgramTokens_Delete" = 35
-    "DepOnboardingSettings_Update" = 30
-    "ManagedAppPolicies_Delete" = 25
+    "EnrollmentProgramTokens_Delete" = 35  # Can break enrollment
+    "DepOnboardingSettings_Update" = 30    # Can affect device provisioning
+    "ManagedAppPolicies_Delete" = 25       # Can remove app protections
     
-    # Read Operations - Lower Risk
-    "Devices_Read" = 10
-    "MobileApps_Read" = 10
-    "DeviceConfigurations_Read" = 10
-    "Reports_Read" = 5
+    # Read Operations - Lower Risk (information disclosure only)
+    "Devices_Read" = 10               # Can view device inventory
+    "MobileApps_Read" = 10           # Can view app catalog
+    "DeviceConfigurations_Read" = 10 # Can view configurations
+    "Reports_Read" = 5               # Can view reports only
   }
 }
 
@@ -422,47 +434,67 @@ function Calculate-RoleRiskScore {
     $userCount
   )
   
+  # RISK SCORING METHODOLOGY:
+  # Total risk score ranges from 0-100 points, calculated from 4 factors:
+  # 1. Permission Criticality (0-40 points) - What can this role do?
+  # 2. Scope Exposure (0-20 points) - How broadly can it act?
+  # 3. User Exposure (0-20 points) - How many people have this access?
+  # 4. Configuration Risk (0-20 points) - Is it custom? Too many permissions?
+  
   $riskScore = 0
   $riskFactors = @{}
   
   # Factor 1: Permission Criticality (0-40 points)
+  # Evaluates the potential damage from permissions granted
+  # TO CUSTOMIZE: Adjust the normalization factor (currently *2) to weight permissions differently
   $permissionScore = 0
   $criticalPermCount = 0
   foreach ($permission in $permissions) {
     $permRisk = Get-PermissionRiskScore -permission $permission
     $permissionScore += $permRisk
-    if ($permRisk -ge 30) { $criticalPermCount++ }
+    if ($permRisk -ge 30) { $criticalPermCount++ }  # Count high-risk permissions
   }
-  # Normalize to 0-40 scale
+  # Average permission risk * 2 to scale to 40-point maximum
   $permissionScore = [Math]::Min(40, ($permissionScore / [Math]::Max(1, $permissions.Count)) * 2)
   $riskFactors['PermissionCriticality'] = [Math]::Round($permissionScore, 1)
   
-  # Factor 2: Scope (0-20 points)
+  # Factor 2: Scope Exposure (0-20 points)
+  # Evaluates how broadly the role can impact the organization
+  # TO CUSTOMIZE: Adjust point values based on your scope tag strategy
   $scopeScore = 0
   if ($role.roleScopeTagIds.Count -eq 0) {
-    $scopeScore = 20  # Organization-wide scope
+    $scopeScore = 20  # No scope tags = organization-wide access (highest risk)
   } elseif ($role.roleScopeTagIds.Count -gt 2) {
-    $scopeScore = 15  # Multiple scopes
+    $scopeScore = 15  # Multiple scopes = broader access
   } else {
-    $scopeScore = 10  # Limited scope
+    $scopeScore = 10  # Single scope = limited access (lowest risk)
   }
   $riskFactors['ScopeExposure'] = $scopeScore
   
   # Factor 3: User Exposure (0-20 points)
+  # Evaluates risk based on number of users with this role
+  # TO CUSTOMIZE: Adjust thresholds based on your organization size
   $userScore = 0
-  if ($userCount -gt 50) { $userScore = 20 }
-  elseif ($userCount -gt 20) { $userScore = 15 }
-  elseif ($userCount -gt 5) { $userScore = 10 }
-  elseif ($userCount -gt 0) { $userScore = 5 }
+  if ($userCount -gt 50) { $userScore = 20 }      # Many users = higher risk
+  elseif ($userCount -gt 20) { $userScore = 15 }  # Moderate users
+  elseif ($userCount -gt 5) { $userScore = 10 }   # Few users
+  elseif ($userCount -gt 0) { $userScore = 5 }    # Very few users
+  # 0 users = 0 points (handled by unused role detection)
   $riskFactors['UserExposure'] = $userScore
   
   # Factor 4: Configuration Risk (0-20 points)
+  # Evaluates risk from role configuration
+  # TO CUSTOMIZE: Adjust thresholds for permission counts and critical permission limits
   $configScore = 0
-  if (-not $role.isBuiltIn -and $permissions.Count -gt 20) { $configScore += 10 }
-  if ($criticalPermCount -gt 5) { $configScore += 10 }
+  if (-not $role.isBuiltIn -and $permissions.Count -gt 20) { 
+    $configScore += 10  # Custom role with many permissions = higher risk
+  }
+  if ($criticalPermCount -gt 5) { 
+    $configScore += 10  # Too many critical permissions in one role
+  }
   $riskFactors['ConfigurationRisk'] = $configScore
   
-  # Calculate total risk score
+  # Calculate total risk score (sum of all factors)
   $riskScore = $riskFactors['PermissionCriticality'] + $riskFactors['ScopeExposure'] + 
                $riskFactors['UserExposure'] + $riskFactors['ConfigurationRisk']
   
@@ -545,29 +577,37 @@ function Get-SecurityRecommendations {
 function Calculate-OverallHealthScore {
   param($roleData)
   
+  # HEALTH SCORE CALCULATION:
+  # Starts at 100 points (perfect score) and deducts points based on security issues
+  # Final score determines letter grade: A (90-100), B (80-89), C (70-79), D (60-69), F (0-59)
+  
   $score = 100
   $deductions = @{}
   
-  # Deduct for high-risk roles
+  # DEDUCTION RULES - TO CUSTOMIZE: Adjust point values based on your risk tolerance
+  
+  # 1. High-risk roles (larger deductions for more serious risks)
   $criticalRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "Critical" }).Count
   $highRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "High" }).Count
   
-  $deductions['CriticalRoles'] = $criticalRoles * 15
-  $deductions['HighRiskRoles'] = $highRoles * 8
+  $deductions['CriticalRoles'] = $criticalRoles * 15  # Each critical role = -15 points
+  $deductions['HighRiskRoles'] = $highRoles * 8       # Each high risk role = -8 points
   
-  # Deduct for medium risk roles
+  # 2. Medium risk roles (moderate deduction)
   $mediumRoles = ($roleData | Where-Object { $_.RiskScore.Level -eq "Medium" }).Count
-  $deductions['MediumRiskRoles'] = $mediumRoles * 3
+  $deductions['MediumRiskRoles'] = $mediumRoles * 3   # Each medium risk role = -3 points
   
-  # Deduct for unused roles
+  # 3. Unused roles (security hygiene issue)
+  # TO CUSTOMIZE: Adjust the multiplier (3) or cap (15) based on importance
   $unusedCount = ($roleData | Where-Object { $_.IsUnused }).Count
-  $deductions['UnusedRoles'] = [Math]::Min(15, $unusedCount * 3)
+  $deductions['UnusedRoles'] = [Math]::Min(15, $unusedCount * 3)  # -3 per unused role, max -15
   
-  # Deduct for roles with excessive permissions
+  # 4. Roles with excessive permissions (violates least privilege)
+  # TO CUSTOMIZE: Adjust the threshold (50) based on your environment
   $excessivePermRoles = ($roleData | Where-Object { $_.PermissionCount -gt 50 }).Count
-  $deductions['ExcessivePermissions'] = $excessivePermRoles * 5
+  $deductions['ExcessivePermissions'] = $excessivePermRoles * 5   # Each over-privileged role = -5 points
   
-  # Calculate final score
+  # Calculate final score (cannot go below 0)
   $totalDeductions = ($deductions.Values | Measure-Object -Sum).Sum
   $finalScore = [Math]::Max(0, $score - $totalDeductions)
   
