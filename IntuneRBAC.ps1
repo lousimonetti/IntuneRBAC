@@ -92,12 +92,12 @@ $script:processedGraphNodeIds = [System.Collections.Generic.HashSet[string]]::ne
 
 # Security Review variables
 $script:securityReviewData = @{
-  RoleRiskScores = @{}
+  RoleRiskScores      = @{}
   CriticalPermissions = @{}
-  SecurityFindings = [System.Collections.Generic.List[object]]::new()
-  ComplianceChecks = @{}
-  Recommendations = [System.Collections.Generic.List[object]]::new()
-  OverallHealthScore = 0
+  SecurityFindings    = [System.Collections.Generic.List[object]]::new()
+  ComplianceChecks    = @{}
+  Recommendations     = [System.Collections.Generic.List[object]]::new()
+  OverallHealthScore  = 0
 }
 
 # Fetch all roles first
@@ -367,41 +367,41 @@ function Get-CriticalPermissions {
   
   return @{
     # Device Management - Critical (can brick or compromise devices)
-    "Devices_Delete" = 40          # Can remove device from management
-    "Devices_Wipe" = 40           # Can wipe all data from device
-    "Devices_ResetPasscode" = 35  # Can lock users out of devices
-    "Devices_DisableLostMode" = 30 # Can disable security feature
-    "Devices_Retire" = 35         # Can remove corporate data
-    "Devices_RemoteLock" = 30     # Can lock devices remotely
+    "Devices_Delete"                 = 40          # Can remove device from management
+    "Devices_Wipe"                   = 40           # Can wipe all data from device
+    "Devices_ResetPasscode"          = 35  # Can lock users out of devices
+    "Devices_DisableLostMode"        = 30 # Can disable security feature
+    "Devices_Retire"                 = 35         # Can remove corporate data
+    "Devices_RemoteLock"             = 30     # Can lock devices remotely
     
     # App Management - High Risk (can affect app availability)
-    "MobileApps_Delete" = 30      # Can remove apps from catalog
-    "MobileApps_Create" = 25      # Can add potentially malicious apps
-    "MobileApps_Update" = 25      # Can modify app behavior
-    "MobileApps_Assign" = 30      # Can deploy apps to devices
+    "MobileApps_Delete"              = 30      # Can remove apps from catalog
+    "MobileApps_Create"              = 25      # Can add potentially malicious apps
+    "MobileApps_Update"              = 25      # Can modify app behavior
+    "MobileApps_Assign"              = 30      # Can deploy apps to devices
     
     # Policy Configuration - High Risk (can change security posture)
-    "DeviceConfigurations_Delete" = 30  # Can remove security configs
-    "DeviceConfigurations_Create" = 25  # Can create conflicting policies
-    "DeviceConfigurations_Update" = 25  # Can weaken security settings
-    "DeviceConfigurations_Assign" = 30  # Can apply policies broadly
+    "DeviceConfigurations_Delete"    = 30  # Can remove security configs
+    "DeviceConfigurations_Create"    = 25  # Can create conflicting policies
+    "DeviceConfigurations_Update"    = 25  # Can weaken security settings
+    "DeviceConfigurations_Assign"    = 30  # Can apply policies broadly
     
     # Security Policies - Critical (direct security impact)
-    "SecurityBaselines_Update" = 35     # Can weaken security baselines
-    "SecurityBaselines_Assign" = 35     # Can apply weak baselines
-    "CompliancePolicies_Delete" = 30    # Can remove compliance checks
-    "ConditionalAccess_Update" = 40     # Can bypass access controls
+    "SecurityBaselines_Update"       = 35     # Can weaken security baselines
+    "SecurityBaselines_Assign"       = 35     # Can apply weak baselines
+    "CompliancePolicies_Delete"      = 30    # Can remove compliance checks
+    "ConditionalAccess_Update"       = 40     # Can bypass access controls
     
     # User/Group Management - High Risk
     "EnrollmentProgramTokens_Delete" = 35  # Can break enrollment
-    "DepOnboardingSettings_Update" = 30    # Can affect device provisioning
-    "ManagedAppPolicies_Delete" = 25       # Can remove app protections
+    "DepOnboardingSettings_Update"   = 30    # Can affect device provisioning
+    "ManagedAppPolicies_Delete"      = 25       # Can remove app protections
     
     # Read Operations - Lower Risk (information disclosure only)
-    "Devices_Read" = 10               # Can view device inventory
-    "MobileApps_Read" = 10           # Can view app catalog
-    "DeviceConfigurations_Read" = 10 # Can view configurations
-    "Reports_Read" = 5               # Can view reports only
+    "Devices_Read"                   = 10               # Can view device inventory
+    "MobileApps_Read"                = 10           # Can view app catalog
+    "DeviceConfigurations_Read"      = 10 # Can view configurations
+    "Reports_Read"                   = 5               # Can view reports only
   }
 }
 
@@ -464,9 +464,11 @@ function Calculate-RoleRiskScore {
   $scopeScore = 0
   if ($role.roleScopeTagIds.Count -eq 0) {
     $scopeScore = 20  # No scope tags = organization-wide access (highest risk)
-  } elseif ($role.roleScopeTagIds.Count -gt 2) {
+  }
+  elseif ($role.roleScopeTagIds.Count -gt 2) {
     $scopeScore = 15  # Multiple scopes = broader access
-  } else {
+  }
+  else {
     $scopeScore = 10  # Single scope = limited access (lowest risk)
   }
   $riskFactors['ScopeExposure'] = $scopeScore
@@ -496,12 +498,12 @@ function Calculate-RoleRiskScore {
   
   # Calculate total risk score (sum of all factors)
   $riskScore = $riskFactors['PermissionCriticality'] + $riskFactors['ScopeExposure'] + 
-               $riskFactors['UserExposure'] + $riskFactors['ConfigurationRisk']
+  $riskFactors['UserExposure'] + $riskFactors['ConfigurationRisk']
   
   return @{
-    TotalScore = [Math]::Round($riskScore, 1)
-    Factors = $riskFactors
-    Level = Get-RiskLevel -score $riskScore
+    TotalScore              = [Math]::Round($riskScore, 1)
+    Factors                 = $riskFactors
+    Level                   = Get-RiskLevel -score $riskScore
     CriticalPermissionCount = $criticalPermCount
   }
 }
@@ -525,48 +527,48 @@ function Get-SecurityRecommendations {
       # High risk recommendations
       if ($role.RiskScore.Factors.PermissionCriticality -gt 30) {
         $recommendations.Add(@{
-          RoleId = $role.Id
-          RoleName = $role.DisplayName
-          Priority = "High"
-          Category = "Excessive Permissions"
-          Recommendation = "Review and reduce critical permissions. Consider splitting into multiple roles."
-          Impact = "Reduces potential damage from compromised accounts"
-        })
+            RoleId         = $role.Id
+            RoleName       = $role.DisplayName
+            Priority       = "High"
+            Category       = "Excessive Permissions"
+            Recommendation = "Review and reduce critical permissions. Consider splitting into multiple roles."
+            Impact         = "Reduces potential damage from compromised accounts"
+          })
       }
       
       if ($role.RiskScore.Factors.ScopeExposure -eq 20) {
         $recommendations.Add(@{
-          RoleId = $role.Id
-          RoleName = $role.DisplayName
-          Priority = "High"
-          Category = "Scope Management"
-          Recommendation = "Implement scope tags to limit role access to specific device groups"
-          Impact = "Limits blast radius of security incidents"
-        })
+            RoleId         = $role.Id
+            RoleName       = $role.DisplayName
+            Priority       = "High"
+            Category       = "Scope Management"
+            Recommendation = "Implement scope tags to limit role access to specific device groups"
+            Impact         = "Limits blast radius of security incidents"
+          })
       }
       
       if ($role.UserCount -gt 50) {
         $recommendations.Add(@{
-          RoleId = $role.Id
-          RoleName = $role.DisplayName
-          Priority = "Medium"
-          Category = "User Management"
-          Recommendation = "Large number of users ($($role.UserCount)). Consider creating sub-roles with limited permissions."
-          Impact = "Follows principle of least privilege"
-        })
+            RoleId         = $role.Id
+            RoleName       = $role.DisplayName
+            Priority       = "Medium"
+            Category       = "User Management"
+            Recommendation = "Large number of users ($($role.UserCount)). Consider creating sub-roles with limited permissions."
+            Impact         = "Follows principle of least privilege"
+          })
       }
     }
     
     # Unused role recommendations
     if ($role.IsUnused) {
       $recommendations.Add(@{
-        RoleId = $role.Id
-        RoleName = $role.DisplayName
-        Priority = "Low"
-        Category = "Role Hygiene"
-        Recommendation = "Role is unused. Consider removing if no longer needed."
-        Impact = "Reduces attack surface"
-      })
+          RoleId         = $role.Id
+          RoleName       = $role.DisplayName
+          Priority       = "Low"
+          Category       = "Role Hygiene"
+          Recommendation = "Role is unused. Consider removing if no longer needed."
+          Impact         = "Reduces attack surface"
+        })
     }
   }
   
@@ -612,9 +614,9 @@ function Calculate-OverallHealthScore {
   $finalScore = [Math]::Max(0, $score - $totalDeductions)
   
   return @{
-    Score = [Math]::Round($finalScore, 1)
+    Score      = [Math]::Round($finalScore, 1)
     Deductions = $deductions
-    Grade = Get-HealthGrade -score $finalScore
+    Grade      = Get-HealthGrade -score $finalScore
   }
 }
 
@@ -707,13 +709,13 @@ function Get-RolesWithScopeTags {
     
     # Store security review data
     $script:securityReviewData.RoleRiskScores[$role.id] = @{
-      RoleId = $role.id
-      DisplayName = $role.displayName
-      RiskScore = $riskScore
-      UserCount = $totalUserCount
-      IsUnused = $isUnused
+      RoleId                    = $role.id
+      DisplayName               = $role.displayName
+      RiskScore                 = $riskScore
+      UserCount                 = $totalUserCount
+      IsUnused                  = $isUnused
       HasOverlappingPermissions = $hasOverlappingPermissions
-      PermissionCount = $allowedActions.Count
+      PermissionCount           = $allowedActions.Count
     }
 
     $roleType = if ($role.isBuiltIn) { "Built-In Role" } else { "Custom Role" }
@@ -2767,11 +2769,11 @@ function Optimize-HtmlSize {
     
   # Extract scripts to preserve them
   $optimized = [regex]::Replace($optimized, $scriptPattern, {
-    param($match)
-    $script:scripts += $match.Value
-    "###SCRIPT_PLACEHOLDER_$($script:scriptIndex)###"
-    $script:scriptIndex++
-  })
+      param($match)
+      $script:scripts += $match.Value
+      "###SCRIPT_PLACEHOLDER_$($script:scriptIndex)###"
+      $script:scriptIndex++
+    })
     
   # Compress whitespace between tags (but not in scripts)
   $optimized = $optimized -replace '>\s+<', '><'
@@ -2855,9 +2857,9 @@ function Generate-SecurityReviewHtml {
   # Calculate risk distribution
   $riskLevels = @{
     Critical = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Critical" }).Count
-    High = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "High" }).Count
-    Medium = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Medium" }).Count
-    Low = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Low" }).Count
+    High     = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "High" }).Count
+    Medium   = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Medium" }).Count
+    Low      = ($roleDataArray | Where-Object { $_.RiskScore.Level -eq "Low" }).Count
   }
   
   foreach ($level in @("Critical", "High", "Medium", "Low")) {
