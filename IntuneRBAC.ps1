@@ -156,8 +156,37 @@ function Get-RoleMembers {
 
   $members = @()
   foreach ($member in $response) {
-    $groupId = $member.members -join ", " # Assuming there's only one group per member
+    #$groupId = $member.members -join ", " # Assuming there's only one group per member
+    if ($member.members.count -gt 1) {
+      foreach ($one in $member.members) {
+        Write-host "Found multiple groups for member $($member.displayName)"
+        Write-host "Group ID: $one"
+        $groupId = $one  #-join  ", " # Assuming there's only one group per member
 
+        # Skip if no group ID
+        if ([string]::IsNullOrEmpty($groupId)) {
+          continue
+        }
+
+        # Fetch the group name
+        $groupUri = "https://graph.microsoft.com/beta/groups/$groupId"
+        try {
+          $groupResponse = Invoke-MgGraphRequest -Uri $groupUri -Method GET
+          $groupName = $groupResponse.displayName
+        }
+        catch {
+          Write-Warning "Group $groupId not found or inaccessible. Skipping."
+          continue
+        }
+
+        $members += [PSCustomObject]@{
+          RoleAssignmentName = $member.displayName
+          RoleAssignmentId   = $member.id
+          GroupId            = $groupId
+          GroupName          = $groupName
+        }
+      }
+    }
     # Skip if no group ID
     if ([string]::IsNullOrEmpty($groupId)) {
       continue
@@ -186,14 +215,19 @@ function Get-RoleMembers {
 }
 
 function Get-GroupMembers {
-  param($groupId)
+  param(
+    [string]$groupId,
+    [string]$nextUri = $null
+  )
 
   # Skip if no group ID provided
   if ([string]::IsNullOrEmpty($groupId)) {
     return @()
   }
-
   $groupMembersUri = "https://graph.microsoft.com/beta/groups/$groupId/members"
+  if (-not [string]::IsNullOrEmpty($nextUri)) {
+    $groupMembersUri = $nextUri
+  }
   try {
     $response = Invoke-MgGraphRequest -Uri $groupMembersUri -Method GET
   }
@@ -203,48 +237,17 @@ function Get-GroupMembers {
   }
 
   $userIds = @()
+  $upns = @()
   foreach ($member in $response.value) {
     if ($member.id) {
       $userIds += $member.id
+      $upns += $member.userPrincipalName
     }
   }
 
   # Check for pagination
   if ($response.'@odata.nextLink') {
-    $userIds += Get-GroupMembers -groupId $groupId
-  }
-
-  # Use parallel processing for user lookups if there are many users
-  if ($userIds.Count -gt 10) {
-    $upns = $userIds | ForEach-Object -Parallel {
-      $userId = $_
-      $userUri = "https://graph.microsoft.com/beta/users/$userId"
-      try {
-        $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
-        if ($userResponse.userPrincipalName) {
-          $userResponse.userPrincipalName
-        }
-      }
-      catch {
-        Write-Warning "Could not fetch user details for ${userId}: $($_.Exception.Message)"
-      }
-    } -ThrottleLimit 5
-  }
-  else {
-    # Sequential processing for small groups
-    $upns = @()
-    foreach ($userId in $userIds) {
-      $userUri = "https://graph.microsoft.com/beta/users/$userId"
-      try {
-        $userResponse = Invoke-MgGraphRequest -Uri $userUri -Method GET
-        if ($userResponse.userPrincipalName) {
-          $upns += $userResponse.userPrincipalName
-        }
-      }
-      catch {
-        Write-Warning "Could not fetch user details for ${userId}: $($_.Exception.Message)"
-      }
-    }
+    $upns += Get-GroupMembers -groupId $groupId -nextUri $response.'@odata.nextLink'
   }
 
   return $upns
